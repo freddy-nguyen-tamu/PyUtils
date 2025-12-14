@@ -1,0 +1,19 @@
+2025/12/13-17:50:46.449 383c Reusing MANIFEST C:\Users\qacer\Downloads\pyutils\playwright_ig_profile\Default\Local Storage\leveldb/MANIFEST-000001
+2025/12/13-17:50:46.480 383c Recovering log #34
+2025/12/13-17:50:46.481 383c Level-0 table #37: started
+2025/12/13-17:50:46.505 383c Level-0 table #37: 21418 bytes OK
+2025/12/13-17:50:46.507 383c Recovering log #36
+2025/12/13-17:50:46.514 383c Reusing old log C:\Users\qacer\Downloads\pyutils\playwright_ig_profile\Default\Local Storage\leveldb/000036.log 
+2025/12/13-17:50:46.516 383c Delete type=0 #34
+2025/12/13-17:52:12.727 830 Level-0 table #39: started
+2025/12/13-17:52:12.742 830 Level-0 table #39: 55807 bytes OK
+2025/12/13-17:52:12.746 830 Delete type=0 #36
+2025/12/13-17:52:12.750 830 Compacting 4@0 + 1@1 files
+2025/12/13-17:52:12.770 830 Generated table #40@0: 874 keys, 113257 bytes
+2025/12/13-17:52:12.770 830 Compacted 4@0 + 1@1 files => 113257 bytes
+2025/12/13-17:52:12.772 830 compacted to: files[ 0 1 1 0 0 0 0 ]
+2025/12/13-17:52:12.777 830 Delete type=2 #30
+2025/12/13-17:52:12.777 830 Delete type=2 #33
+2025/12/13-17:52:12.777 830 Delete type=2 #35
+2025/12/13-17:52:12.778 830 Delete type=2 #37
+2025/12/13-17:52:12.778 830 Delete type=2 #39

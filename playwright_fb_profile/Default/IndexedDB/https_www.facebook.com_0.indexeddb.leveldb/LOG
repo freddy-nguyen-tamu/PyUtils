@@ -1,0 +1,6 @@
+2025/12/13-10:53:24.398 37bc Creating DB C:\Users\qacer\Downloads\playwright_fb_profile\Default\IndexedDB\https_www.facebook.com_0.indexeddb.leveldb since it was missing.
+2025/12/13-10:53:24.421 37bc Reusing MANIFEST C:\Users\qacer\Downloads\playwright_fb_profile\Default\IndexedDB\https_www.facebook.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/12/13-10:53:47.346 2290 Level-0 table #5: started
+2025/12/13-10:53:47.352 2290 Level-0 table #5: 24007 bytes OK
+2025/12/13-10:53:47.355 2290 Delete type=0 #3
+2025/12/13-10:53:47.369 37bc Manual compaction at level-0 from '\x00\x0a\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x0b\x00\x00\x00' @ 0 : 0; will stop at (end)

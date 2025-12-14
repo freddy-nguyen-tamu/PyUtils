@@ -1,0 +1,6 @@
+2025/12/14-07:36:37.360 339c Reusing MANIFEST C:\Users\qacer\Downloads\!py\pw_user_data\Default\Local Storage\leveldb/MANIFEST-000001
+2025/12/14-07:36:37.388 339c Recovering log #7
+2025/12/14-07:36:37.409 339c Reusing old log C:\Users\qacer\Downloads\!py\pw_user_data\Default\Local Storage\leveldb/000007.log 
+2025/12/14-07:55:38.040 adc Level-0 table #10: started
+2025/12/14-07:55:38.055 adc Level-0 table #10: 13079 bytes OK
+2025/12/14-07:55:38.062 adc Delete type=0 #7
