@@ -27,7 +27,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 
-REPLAY_PAGE = "https://www.nimo.tv/user/[]"
+REPLAY_PAGE = ""
 HISTORY_FILE = "history.json"
 CLIENT_SECRET_FILE = "client_secret.json"   # Google OAuth client JSON
 TOKEN_FILE = "youtube_token.json"
@@ -379,6 +379,11 @@ def process_entry(entry: Dict, history: Dict, youtube, download_dir: Path) -> No
     log(f"Deleting local file: {output_file}")
     output_file.unlink(missing_ok=True)
 
+    joined_ts = output_file.with_suffix(".joined.ts")
+    progress_json = output_file.with_suffix(".progress.json")
+
+    log(f"Deleting temp file: {joined_ts}")
+    joined_ts.unlink(missing_ok=True)
 
 def main():
     download_dir = Path(DOWNLOAD_DIR)

@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import logging
+import os
 import subprocess
 import sys
 import time
-from logging.handlers import RotatingFileHandler
+from datetime import datetime
 from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
-LOG_FILE = LOG_DIR / "nimo_diary.log"
+RUNS_DIR = LOG_DIR / "runs"
+MASTER_LOG = LOG_DIR / "nimo_master.log"
 
-PYTHON_EXE = "py -3.11"
+PYTHON_EXE = sys.executable
 MAIN_SCRIPT = BASE_DIR / "nimo_ytb.py"
 
 SLEEP_AFTER_RUN = True
@@ -21,45 +22,37 @@ SLEEP_ONLY_IF_SUCCESS = True
 POST_RUN_WAIT_SECONDS = 10
 
 
-def setup_logging() -> logging.Logger:
+def ensure_dirs() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-    logger = logging.getLogger("nimo_auto")
-    logger.setLevel(logging.INFO)
-    logger.handlers.clear()
-
-    handler = RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=2 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8",
-    )
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(message)s",
-        "%Y-%m-%d %H:%M:%S",
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    return logger
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-logger = setup_logging()
+def timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def log(msg: str) -> None:
-    logger.info(msg)
+def run_log_path() -> Path:
+    return RUNS_DIR / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
 
-def err(msg: str) -> None:
-    logger.error(msg)
+def write_line(path: Path, line: str) -> None:
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 
-def sleep_windows() -> None:
+def log(run_log: Path, level: str, msg: str) -> None:
+    line = f"{timestamp()} | {level} | {msg}"
+    print(line, flush=True)
+    write_line(run_log, line)
+    write_line(MASTER_LOG, line)
+
+
+def sleep_windows(run_log: Path) -> None:
     if not SLEEP_AFTER_RUN:
-        log("Sleep skipped because SLEEP_AFTER_RUN is False")
+        log(run_log, "INFO", "Sleep skipped because SLEEP_AFTER_RUN is False")
         return
 
-    log("Putting computer to sleep")
+    log(run_log, "INFO", "Putting computer to sleep")
     subprocess.run(
         'rundll32.exe powrprof.dll,SetSuspendState 0,1,0',
         shell=True,
@@ -68,52 +61,79 @@ def sleep_windows() -> None:
 
 
 def main() -> int:
-    log("========== RUN START ==========")
+    ensure_dirs()
+    run_log = run_log_path()
+
+    log(run_log, "INFO", "========== RUN START ==========")
+    log(run_log, "INFO", f"BASE_DIR={BASE_DIR}")
+    log(run_log, "INFO", f"RUN_LOG={run_log}")
+    log(run_log, "INFO", f"MASTER_LOG={MASTER_LOG}")
 
     if not MAIN_SCRIPT.exists():
-        err(f"Missing script: {MAIN_SCRIPT}")
-        log("========== RUN END ==========")
+        log(run_log, "ERROR", f"Missing script: {MAIN_SCRIPT}")
+        log(run_log, "INFO", "========== RUN END ==========")
         return 1
 
-    cmd = f'{PYTHON_EXE} "{MAIN_SCRIPT}"'
-    log(f"Running: {cmd}")
+    cmd = [PYTHON_EXE, "-u", str(MAIN_SCRIPT)]
+    log(run_log, "INFO", f"Running: {' '.join(cmd)}")
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
 
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             cmd,
             cwd=str(BASE_DIR),
-            shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
+            bufsize=1,
+            env=env,
         )
 
-        if result.stdout:
-            for line in result.stdout.splitlines():
-                log(f"[nimo_ytb] {line}")
+        assert process.stdout is not None
 
-        log(f"nimo_ytb.py exit code: {result.returncode}")
+        # Raw child transcript file: exactly what nimo_ytb.py / nimo.py print
+        raw_log = RUNS_DIR / f"{run_log.stem}_raw.log"
 
-        if result.returncode == 0:
-            log("Run completed successfully")
+        for raw_line in process.stdout:
+            line = raw_line.rstrip("\r\n")
+
+            # Show exactly what child printed
+            print(line, flush=True)
+
+            # Save raw transcript exactly
+            write_line(raw_log, line)
+
+            # Save timestamped copies too
+            write_line(run_log, f"{timestamp()} | CHILD | {line}")
+            write_line(MASTER_LOG, f"{timestamp()} | CHILD | {line}")
+
+        returncode = process.wait()
+        log(run_log, "INFO", f"nimo_ytb.py exit code: {returncode}")
+
+        if returncode == 0:
+            log(run_log, "INFO", "Run completed successfully")
             time.sleep(POST_RUN_WAIT_SECONDS)
-            sleep_windows()
-            log("========== RUN END ==========")
+            if SLEEP_AFTER_RUN:
+                sleep_windows(run_log)
+            log(run_log, "INFO", "========== RUN END ==========")
             return 0
 
-        err("Run finished with errors")
+        log(run_log, "ERROR", "Run finished with errors")
         if not SLEEP_ONLY_IF_SUCCESS:
             time.sleep(POST_RUN_WAIT_SECONDS)
-            sleep_windows()
+            if SLEEP_AFTER_RUN:
+                sleep_windows(run_log)
 
-        log("========== RUN END ==========")
-        return result.returncode or 1
+        log(run_log, "INFO", "========== RUN END ==========")
+        return returncode or 1
 
     except Exception as e:
-        err(f"Fatal launcher error: {e}")
-        log("========== RUN END ==========")
+        log(run_log, "ERROR", f"Fatal launcher error: {e}")
+        log(run_log, "INFO", "========== RUN END ==========")
         return 1
 
 

@@ -1,4 +1,5 @@
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -7,12 +8,17 @@ import time
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 from playwright.sync_api import sync_playwright
 
 
 def log(msg: str):
     print(f"[+] {msg}")
+
+
+def warn(msg: str):
+    print(f"[!] {msg}")
 
 
 def ensure_ffmpeg():
@@ -227,23 +233,11 @@ def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
     return found["m3u8"], found["ts"], ua, target_hyvid
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("url", help="Nimo page URL")
-    ap.add_argument("-o", "--output", default="video.mp4")
-    ap.add_argument("--profile-dir", default="nimo_profile")
-    ap.add_argument("--detect-timeout", type=float, default=30.0)
-    ap.add_argument("--start-index", type=int, default=1)
-    ap.add_argument("--max-segments", type=int, default=0)
-    args = ap.parse_args()
-
-    out_mp4 = Path(args.output).resolve()
-    joined_ts = out_mp4.with_suffix(".joined.ts")
-
+def get_playlist_and_segments(page_url: str, profile_dir: str, detect_timeout: float):
     m3u8_url, ts_template_url, ua, target_hyvid = auto_capture_urls(
-        args.url,
-        args.profile_dir,
-        args.detect_timeout,
+        page_url,
+        profile_dir,
+        detect_timeout,
     )
 
     headers = {
@@ -264,26 +258,154 @@ def main():
         media_playlist_text = playlist_text
 
     segment_urls = build_full_segment_urls(media_playlist_url, media_playlist_text, ts_template_url)
+    if not segment_urls:
+        raise RuntimeError("No segment URLs to download")
 
-    if args.start_index > 1:
-        segment_urls = segment_urls[args.start_index - 1:]
+    return headers, target_hyvid, segment_urls
+
+
+def load_progress(progress_file: Path):
+    if not progress_file.exists():
+        return None
+    try:
+        return json.loads(progress_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def save_progress(progress_file: Path, data: dict):
+    progress_file.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def delete_if_exists(path: Path):
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def is_refreshable_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    if isinstance(exc, HTTPError):
+        if exc.code in (401, 403):
+            return True
+    if "403" in text or "401" in text or "forbidden" in text or "unauthorized" in text:
+        return True
+    if "timed out" in text or "timeout" in text or "remote end closed connection" in text:
+        return True
+    return False
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("url", help="Nimo page URL")
+    ap.add_argument("-o", "--output", default="video.mp4")
+    ap.add_argument("--profile-dir", default="nimo_profile")
+    ap.add_argument("--detect-timeout", type=float, default=30.0)
+    ap.add_argument("--start-index", type=int, default=1)
+    ap.add_argument("--max-segments", type=int, default=0)
+    ap.add_argument("--refresh-retries", type=int, default=20)
+    ap.add_argument("--request-timeout", type=int, default=60)
+    args = ap.parse_args()
+
+    out_mp4 = Path(args.output).resolve()
+    joined_ts = out_mp4.with_suffix(".joined.ts")
+    progress_file = out_mp4.with_suffix(".progress.json")
+
+    progress = load_progress(progress_file)
+    if progress and progress.get("url") == args.url:
+        current_index = int(progress.get("next_index", 1))
+        log(f"Resuming from saved progress at segment {current_index}")
+    else:
+        current_index = max(1, args.start_index)
+
+    headers, target_hyvid, segment_urls = get_playlist_and_segments(
+        args.url,
+        args.profile_dir,
+        args.detect_timeout,
+    )
 
     if args.max_segments > 0:
         segment_urls = segment_urls[:args.max_segments]
 
-    if not segment_urls:
-        raise RuntimeError("No segment URLs to download")
+    total_segments = len(segment_urls)
+    log(f"Total segments to download: {total_segments}")
 
-    log(f"Total segments to download: {len(segment_urls)}")
+    if current_index > total_segments:
+        log("All segments already downloaded, going to remux")
+    else:
+        refresh_count = 0
+        mode = "ab" if joined_ts.exists() and current_index > 1 else "wb"
 
-    with open(joined_ts, "wb") as out:
-        for i, seg_url in enumerate(segment_urls, 1):
-            log(f"Downloading segment {i}/{len(segment_urls)}")
-            out.write(http_get_bytes(seg_url, headers))
+        while current_index <= total_segments:
+            try:
+                with open(joined_ts, mode) as out:
+                    for i in range(current_index, total_segments + 1):
+                        seg_url = segment_urls[i - 1]
+
+                        if i == current_index or i % 25 == 0 or i == total_segments:
+                            log(f"Downloading segment {i}/{total_segments}")
+
+                        data = http_get_bytes(seg_url, headers, timeout=args.request_timeout)
+                        out.write(data)
+
+                        save_progress(progress_file, {
+                            "url": args.url,
+                            "target_hyvid": target_hyvid,
+                            "next_index": i + 1,
+                            "total_segments": total_segments,
+                            "output": str(out_mp4),
+                            "updated_at": int(time.time()),
+                        })
+
+                        current_index = i + 1
+
+                break
+
+            except Exception as e:
+                if not is_refreshable_error(e):
+                    raise
+
+                refresh_count += 1
+                if refresh_count > args.refresh_retries:
+                    raise RuntimeError(
+                        f"Too many refresh attempts ({args.refresh_retries}) at segment {current_index}: {e}"
+                    ) from e
+
+                warn(f"Request failed at segment {current_index}: {e}")
+                warn(f"Refreshing signed URLs (attempt {refresh_count}/{args.refresh_retries})...")
+
+                headers, target_hyvid, fresh_segment_urls = get_playlist_and_segments(
+                    args.url,
+                    args.profile_dir,
+                    args.detect_timeout,
+                )
+
+                if args.max_segments > 0:
+                    fresh_segment_urls = fresh_segment_urls[:args.max_segments]
+
+                if len(fresh_segment_urls) != total_segments:
+                    warn(
+                        f"Playlist length changed from {total_segments} to {len(fresh_segment_urls)}; "
+                        f"continuing with fresh playlist"
+                    )
+                    total_segments = len(fresh_segment_urls)
+
+                segment_urls = fresh_segment_urls
+                mode = "ab"
+                time.sleep(2)
+
+    if not joined_ts.exists():
+        raise RuntimeError("joined.ts was not created")
 
     log("Remuxing to mp4...")
     remux_ts_to_mp4(joined_ts, out_mp4)
     log(f"Saved to {out_mp4}")
+
+    delete_if_exists(progress_file)
 
 
 if __name__ == "__main__":
