@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -13,6 +14,7 @@ BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 RUNS_DIR = LOG_DIR / "runs"
 MASTER_LOG = LOG_DIR / "nimo_master.log"
+DOWNLOAD_DIR = BASE_DIR / "downloads"
 
 MAIN_SCRIPT = BASE_DIR / "nimo_ytb.py"
 
@@ -24,6 +26,7 @@ POST_RUN_WAIT_SECONDS = 10
 def ensure_dirs() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def timestamp() -> str:
@@ -35,10 +38,6 @@ def run_log_path() -> Path:
 
 
 def safe_write_line(path: Path, line: str) -> None:
-    """
-    Best-effort log write.
-    Never raises. Retries briefly if the file is temporarily locked.
-    """
     last_error = None
 
     for _ in range(5):
@@ -50,7 +49,6 @@ def safe_write_line(path: Path, line: str) -> None:
             last_error = e
             time.sleep(0.2)
 
-    # fallback log; also never raises
     try:
         fallback = LOG_DIR / "log_write_errors.log"
         with open(fallback, "a", encoding="utf-8") as f:
@@ -70,6 +68,26 @@ def log(run_log: Path, level: str, msg: str) -> None:
 
     safe_write_line(run_log, line)
     safe_write_line(MASTER_LOG, line)
+
+
+def clear_downloads_folder(run_log: Path) -> None:
+    log(run_log, "INFO", f"Clearing downloads folder: {DOWNLOAD_DIR}")
+
+    if not DOWNLOAD_DIR.exists():
+        DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        log(run_log, "INFO", "Downloads folder did not exist; created it")
+        return
+
+    for item in DOWNLOAD_DIR.iterdir():
+        try:
+            if item.is_dir():
+                shutil.rmtree(item)
+                log(run_log, "INFO", f"Deleted folder: {item}")
+            else:
+                item.unlink()
+                log(run_log, "INFO", f"Deleted file: {item}")
+        except Exception as e:
+            log(run_log, "ERROR", f"Failed to delete {item}: {e}")
 
 
 def sleep_windows(run_log: Path) -> None:
@@ -99,6 +117,8 @@ def main() -> int:
     log(run_log, "INFO", f"RAW_LOG={raw_log}")
     log(run_log, "INFO", f"MASTER_LOG={MASTER_LOG}")
 
+    clear_downloads_folder(run_log)
+
     if not MAIN_SCRIPT.exists():
         log(run_log, "ERROR", f"Missing script: {MAIN_SCRIPT}")
         log(run_log, "INFO", "========== RUN END ==========")
@@ -109,6 +129,7 @@ def main() -> int:
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
 
     try:
         process = subprocess.Popen(
@@ -133,13 +154,11 @@ def main() -> int:
         for raw_line in process.stdout:
             line = raw_line.rstrip("\r\n")
 
-            # show exact child output live
             try:
                 print(line, flush=True)
             except Exception:
                 pass
 
-            # write raw transcript and timestamped logs, but never crash if locked
             safe_write_line(raw_log, line)
             safe_write_line(run_log, f"{timestamp()} | CHILD | {line}")
             safe_write_line(MASTER_LOG, f"{timestamp()} | CHILD | {line}")
@@ -165,8 +184,6 @@ def main() -> int:
         return returncode or 1
 
     except Exception as e:
-        # Launcher should not die just because logging had trouble.
-        # Try to terminate child cleanly, then report.
         try:
             process.terminate()
         except Exception:

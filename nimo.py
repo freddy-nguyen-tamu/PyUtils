@@ -54,6 +54,11 @@ def replace_query(url: str, query_dict: dict) -> str:
     ))
 
 
+def detect_quality_from_url(url: str) -> str:
+    m = re.search(r"(360|480|720|1080)p", url.lower())
+    return m.group(1) + "P" if m else "unknown"
+
+
 def pick_highest_bandwidth_variant(master_url: str, text: str) -> str:
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     variants = []
@@ -61,17 +66,33 @@ def pick_highest_bandwidth_variant(master_url: str, text: str) -> str:
     for i, line in enumerate(lines):
         if line.startswith("#EXT-X-STREAM-INF"):
             bw = 0
+            res = None
+
             m = re.search(r"BANDWIDTH=(\d+)", line)
             if m:
                 bw = int(m.group(1))
+
+            r = re.search(r"RESOLUTION=(\d+)x(\d+)", line)
+            if r:
+                res = f"{r.group(2)}P"
+
             if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
-                variants.append((bw, urljoin(master_url, lines[i + 1])))
+                url = urljoin(master_url, lines[i + 1])
+                variants.append((bw, res, url))
 
     if not variants:
+        warn("[QUALITY] No variant streams found, using master playlist")
         return master_url
 
     variants.sort(key=lambda x: x[0], reverse=True)
-    return variants[0][1]
+
+    log("[QUALITY] Available variants:")
+    for bw, res, url in variants:
+        log(f"  - {res or 'unknown'} | bandwidth={bw} | {url}")
+
+    best = variants[0]
+    log(f"[QUALITY] Selected variant: {best[1] or 'unknown'} (bandwidth={best[0]})")
+    return best[2]
 
 
 def extract_segment_paths(media_playlist_url: str, playlist_text: str) -> list[str]:
@@ -135,6 +156,107 @@ def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
         "ts": None,
     }
 
+    def clear_found():
+        found["m3u8"] = None
+        found["ts"] = None
+
+    def parse_quality_label(text: str) -> int:
+        if not text:
+            return 0
+        m = re.search(r"(\d+)\s*P", text.upper())
+        return int(m.group(1)) if m else 0
+
+    def ensure_max_quality(page, timeout_ms: int = 15000) -> str | None:
+        end = time.time() + (timeout_ms / 1000.0)
+        best_label = None
+
+        while time.time() < end:
+            try:
+                try:
+                    page.locator("#nimo-player, .nimo-player, .video-player, video").first.hover(timeout=1000)
+                except Exception:
+                    pass
+
+                for sel in [".play-btn", ".nimo-icon-web-play", ".nimo-icon-play-btn", "video"]:
+                    try:
+                        page.locator(sel).first.click(timeout=500)
+                        break
+                    except Exception:
+                        pass
+
+                rate_current = page.locator(".rate-current").first
+                rate_control = page.locator(".rate-control").first
+                rate_items = page.locator(".rate-control_item")
+
+                if rate_current.count() == 0 or rate_control.count() == 0:
+                    time.sleep(0.5)
+                    continue
+
+                current_text = (rate_current.text_content() or "").strip()
+                current_q = parse_quality_label(current_text)
+                log(f"[QUALITY] Current UI quality: {current_text or 'unknown'}")
+
+                try:
+                    rate_control.hover(timeout=1000)
+                except Exception:
+                    pass
+                try:
+                    rate_current.click(timeout=1000)
+                except Exception:
+                    try:
+                        rate_control.click(timeout=1000)
+                    except Exception:
+                        pass
+
+                if rate_items.count() == 0:
+                    time.sleep(0.5)
+                    continue
+
+                best_q = -1
+                best_idx = None
+                best_label = None
+
+                for i in range(rate_items.count()):
+                    text = (rate_items.nth(i).text_content() or "").strip()
+                    q = parse_quality_label(text)
+                    log(f"[QUALITY] Menu option found: {text or 'unknown'}")
+                    if q > best_q:
+                        best_q = q
+                        best_idx = i
+                        best_label = text
+
+                if best_idx is None:
+                    log(f"[QUALITY] Player UI set to: {current_text or 'unknown'}")
+                    return current_text or None
+
+                if current_q < best_q:
+                    rate_items.nth(best_idx).click(timeout=2000)
+
+                    page.wait_for_function(
+                        """target => {
+                            const el = document.querySelector('.rate-current');
+                            return el && el.textContent && el.textContent.trim().toUpperCase() === target.toUpperCase();
+                        }""",
+                        arg=best_label,
+                        timeout=5000,
+                    )
+
+                    log(f"Switched quality from {current_text or 'unknown'} to {best_label}")
+                    log(f"[QUALITY] Player UI set to: {best_label or current_text}")
+                    return best_label
+
+                log(f"Quality already at max: {current_text}")
+                log(f"[QUALITY] Player UI set to: {current_text or best_label or 'unknown'}")
+                return current_text or best_label
+
+            except Exception:
+                time.sleep(0.5)
+
+        warn("Could not confirm quality switch before capture")
+        if best_label:
+            log(f"[QUALITY] Last best UI quality seen: {best_label}")
+        return best_label
+
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=profile_dir,
@@ -193,22 +315,41 @@ def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
             "[title*=Start]",
         ]
 
-        deadline = time.time() + timeout_seconds
-        while time.time() < deadline:
-            if found["m3u8"] and found["ts"]:
-                break
-
+        for _ in range(3):
             for sel in selectors:
                 try:
                     page.locator(sel).first.click(timeout=500)
                 except Exception:
                     pass
-
             try:
-                page.keyboard.press("Space")
                 page.keyboard.press("Space")
             except Exception:
                 pass
+            time.sleep(0.5)
+
+        selected_quality = ensure_max_quality(page)
+        if selected_quality:
+            log(f"[QUALITY] Confirmed player quality target: {selected_quality}")
+
+        clear_found()
+        log("[QUALITY] Cleared previously captured URLs after quality switch")
+
+        for _ in range(2):
+            for sel in selectors:
+                try:
+                    page.locator(sel).first.click(timeout=500)
+                except Exception:
+                    pass
+            try:
+                page.locator("#nimo-player, .nimo-player, .video-player, video").first.hover(timeout=1000)
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if found["m3u8"] and found["ts"]:
+                break
 
             try:
                 perf_urls = page.evaluate("""
@@ -221,6 +362,11 @@ def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
             except Exception:
                 pass
 
+            try:
+                page.locator("#nimo-player, .nimo-player, .video-player, video").first.hover(timeout=500)
+            except Exception:
+                pass
+
             time.sleep(1)
 
         context.close()
@@ -229,6 +375,9 @@ def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
         raise RuntimeError(f"No target .m3u8 captured for hyvid={target_hyvid}")
     if not found["ts"]:
         raise RuntimeError(f"No target .ts captured for hyvid={target_hyvid}")
+
+    log(f"[QUALITY] Final captured playlist URL hint: {detect_quality_from_url(found['m3u8'])}")
+    log(f"[QUALITY] Final captured ts URL hint: {detect_quality_from_url(found['ts'])}")
 
     return found["m3u8"], found["ts"], ua, target_hyvid
 
@@ -252,14 +401,19 @@ def get_playlist_and_segments(page_url: str, profile_dir: str, detect_timeout: f
     if "#EXT-X-STREAM-INF" in playlist_text:
         media_playlist_url = pick_highest_bandwidth_variant(m3u8_url, playlist_text)
         log(f"Using variant playlist: {media_playlist_url}")
+        log(f"[QUALITY] Detected from URL: {detect_quality_from_url(media_playlist_url)}")
         media_playlist_text = http_get_text(media_playlist_url, headers)
     else:
         media_playlist_url = m3u8_url
         media_playlist_text = playlist_text
+        log(f"[QUALITY] Non-master playlist in use; URL hint: {detect_quality_from_url(media_playlist_url)}")
 
     segment_urls = build_full_segment_urls(media_playlist_url, media_playlist_text, ts_template_url)
     if not segment_urls:
         raise RuntimeError("No segment URLs to download")
+
+    log(f"[QUALITY] First segment URL sample:")
+    log(f"  {segment_urls[0][:160]}...")
 
     return headers, target_hyvid, segment_urls
 
@@ -345,6 +499,9 @@ def main():
                 with open(joined_ts, mode) as out:
                     for i in range(current_index, total_segments + 1):
                         seg_url = segment_urls[i - 1]
+
+                        if i == current_index:
+                            log(f"[QUALITY] Downloading from segment URL hint: {detect_quality_from_url(seg_url)}")
 
                         if i == current_index or i % 25 == 0 or i == total_segments:
                             log(f"Downloading segment {i}/{total_segments}")

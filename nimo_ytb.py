@@ -26,8 +26,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-
 REPLAY_PAGE = "https://www.nimo.tv/user/[]"
+
 HISTORY_FILE = "history.json"
 CLIENT_SECRET_FILE = "client_secret.json"
 TOKEN_FILE = "youtube_token.json"
@@ -36,19 +36,32 @@ NIMO_DOWNLOADER = "nimo.py"
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
-# change if you want
 YOUTUBE_PRIVACY_STATUS = "private"
 
-# keep downloaded files after successful upload?
-DELETE_AFTER_SUCCESS = False
+# delete downloaded files after successful upload
+DELETE_AFTER_SUCCESS = True
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 
 def log(msg: str) -> None:
-    print(f"[+] {msg}")
+    try:
+        print(f"[+] {msg}")
+    except UnicodeEncodeError:
+        safe = str(msg).encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+        print(f"[+] {safe}")
 
 
 def warn(msg: str) -> None:
-    print(f"[!] {msg}")
+    try:
+        print(f"[!] {msg}")
+    except UnicodeEncodeError:
+        safe = str(msg).encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+        print(f"[!] {safe}")
 
 
 def load_history(path: str) -> Dict:
@@ -343,6 +356,21 @@ def mark_seen(history: Dict, entry: Dict, status: str, note: str = "") -> None:
     save_history(HISTORY_FILE, history)
 
 
+def safe_delete(path: Path, label: str, retries: int = 10, delay: float = 1.0) -> bool:
+    for attempt in range(1, retries + 1):
+        try:
+            if path.exists():
+                path.unlink()
+                log(f"Deleted {label}: {path}")
+            else:
+                log(f"{label} already missing: {path}")
+            return True
+        except Exception as e:
+            warn(f"Failed to delete {label} (attempt {attempt}/{retries}): {path} | {e}")
+            time.sleep(delay)
+    return False
+
+
 def process_entry(entry: Dict, history: Dict, youtube, download_dir: Path) -> None:
     video_id = entry["video_id"]
 
@@ -402,14 +430,15 @@ def process_entry(entry: Dict, history: Dict, youtube, download_dir: Path) -> No
     mark_seen(history, entry, "uploaded")
 
     if DELETE_AFTER_SUCCESS:
-        log(f"Deleting local file: {output_file}")
-        output_file.unlink(missing_ok=True)
+        log("Starting cleanup after successful upload...")
+        ok_mp4 = safe_delete(output_file, "mp4")
+        ok_ts = safe_delete(paths["joined_ts"], "joined.ts")
+        ok_progress = safe_delete(paths["progress_json"], "progress.json")
 
-        log(f"Deleting temp file: {paths['joined_ts']}")
-        paths["joined_ts"].unlink(missing_ok=True)
-
-        log(f"Deleting progress file: {paths['progress_json']}")
-        paths["progress_json"].unlink(missing_ok=True)
+        if ok_mp4 and ok_ts and ok_progress:
+            log("Cleanup finished successfully")
+        else:
+            warn("Cleanup finished with some files not deleted")
     else:
         log("Keeping local files after successful upload")
 
@@ -428,14 +457,14 @@ def main():
     if not entries:
         warn("No replay entries found")
         warn("Make sure Chrome is installed and chromedriver matches your Chrome version.")
-        return
+        return 1
 
     unseen = [e for e in entries if e["video_id"] not in history["uploaded"]]
     log(f"Unseen entries: {len(unseen)}")
 
     if not unseen:
         log("Nothing new to do")
-        return
+        return 0
 
     youtube = get_youtube_service()
 
@@ -446,19 +475,26 @@ def main():
     except Exception as e:
         warn(f"Could not confirm YouTube channel name: {e}")
 
+    had_failures = False
+
     for entry in unseen:
         try:
             process_entry(entry, history, youtube, download_dir)
         except HttpError as e:
+            had_failures = True
             mark_seen(history, entry, "upload_failed", str(e))
             warn(f"YouTube API error for {entry['video_id']}: {e}")
         except subprocess.CalledProcessError as e:
+            had_failures = True
             mark_seen(history, entry, "download_failed", f"exit={e.returncode}")
             warn(f"Downloader failed for {entry['video_id']}: exit={e.returncode}")
         except Exception as e:
+            had_failures = True
             mark_seen(history, entry, "failed", str(e))
             warn(f"Failed for {entry['video_id']}: {e}")
 
+    return 1 if had_failures else 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
