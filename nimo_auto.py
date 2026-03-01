@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import json
 import os
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ LOG_DIR = BASE_DIR / "logs"
 RUNS_DIR = LOG_DIR / "runs"
 MASTER_LOG = LOG_DIR / "nimo_master.log"
 DOWNLOAD_DIR = BASE_DIR / "downloads"
+AUTO_STATE_FILE = BASE_DIR / "auto_state.json"
 
 MAIN_SCRIPT = BASE_DIR / "nimo_ytb.py"
 
@@ -70,6 +72,19 @@ def log(run_log: Path, level: str, msg: str) -> None:
     safe_write_line(MASTER_LOG, line)
 
 
+def list_download_items() -> list[Path]:
+    if not DOWNLOAD_DIR.exists():
+        return []
+    return sorted([p for p in DOWNLOAD_DIR.iterdir()], key=lambda p: p.name.lower())
+
+
+def log_download_folder(run_log: Path, title: str) -> None:
+    items = list_download_items()
+    log(run_log, "INFO", f"{title}: {len(items)} item(s) in downloads")
+    for p in items:
+        log(run_log, "INFO", f"downloads item: {p.name}")
+
+
 def clear_downloads_folder(run_log: Path) -> None:
     log(run_log, "INFO", f"Clearing downloads folder: {DOWNLOAD_DIR}")
 
@@ -88,6 +103,31 @@ def clear_downloads_folder(run_log: Path) -> None:
                 log(run_log, "INFO", f"Deleted file: {item}")
         except Exception as e:
             log(run_log, "ERROR", f"Failed to delete {item}: {e}")
+
+
+def read_auto_state() -> dict:
+    if not AUTO_STATE_FILE.exists():
+        return {
+            "can_clear_downloads": False,
+            "reason": "missing_auto_state_file",
+            "details": {},
+        }
+    try:
+        with open(AUTO_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if "can_clear_downloads" not in data:
+            data["can_clear_downloads"] = False
+        if "reason" not in data:
+            data["reason"] = "missing_reason"
+        if "details" not in data:
+            data["details"] = {}
+        return data
+    except Exception as e:
+        return {
+            "can_clear_downloads": False,
+            "reason": f"invalid_auto_state_file: {e}",
+            "details": {},
+        }
 
 
 def sleep_windows(run_log: Path) -> None:
@@ -117,7 +157,10 @@ def main() -> int:
     log(run_log, "INFO", f"RAW_LOG={raw_log}")
     log(run_log, "INFO", f"MASTER_LOG={MASTER_LOG}")
 
-    clear_downloads_folder(run_log)
+    # IMPORTANT:
+    # Do NOT clear downloads at startup anymore.
+    # Let nimo_ytb.py inspect leftovers first.
+    log_download_folder(run_log, "Startup snapshot")
 
     if not MAIN_SCRIPT.exists():
         log(run_log, "ERROR", f"Missing script: {MAIN_SCRIPT}")
@@ -165,6 +208,21 @@ def main() -> int:
 
         returncode = process.wait()
         log(run_log, "INFO", f"nimo_ytb.py exit code: {returncode}")
+
+        auto_state = read_auto_state()
+        log(
+            run_log,
+            "INFO",
+            f"auto_state: can_clear_downloads={auto_state['can_clear_downloads']} | reason={auto_state['reason']}",
+        )
+
+        # Clear only AFTER nimo_ytb.py has checked and explicitly allowed it.
+        if auto_state["can_clear_downloads"]:
+            clear_downloads_folder(run_log)
+        else:
+            log(run_log, "INFO", "Preserving downloads folder because recoverable work may still exist")
+
+        log_download_folder(run_log, "Post-run snapshot")
 
         if returncode == 0:
             log(run_log, "INFO", "Run completed successfully")

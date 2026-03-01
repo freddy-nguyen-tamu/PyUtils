@@ -7,8 +7,9 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 
@@ -33,12 +34,11 @@ CLIENT_SECRET_FILE = "client_secret.json"
 TOKEN_FILE = "youtube_token.json"
 DOWNLOAD_DIR = "downloads"
 NIMO_DOWNLOADER = "nimo.py"
+AUTO_STATE_FILE = "auto_state.json"
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 YOUTUBE_PRIVACY_STATUS = "private"
-
-# delete downloaded files after successful upload
 DELETE_AFTER_SUCCESS = True
 
 try:
@@ -64,31 +64,54 @@ def warn(msg: str) -> None:
         print(f"[!] {safe}")
 
 
-def load_history(path: str) -> Dict:
+def load_json_file(path: str, default):
     if not os.path.exists(path):
-        return {"uploaded": {}, "seen": {}}
+        return default
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if "uploaded" not in data:
-            data["uploaded"] = {}
-        if "seen" not in data:
-            data["seen"] = {}
-        return data
+            return json.load(f)
     except Exception:
-        return {"uploaded": {}, "seen": {}}
+        return default
 
 
-def save_history(path: str, history: Dict) -> None:
+def save_json_file(path: str, data) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
 
 
+def load_history(path: str) -> Dict:
+    data = load_json_file(path, {"uploaded": {}, "seen": {}})
+    if "uploaded" not in data:
+        data["uploaded"] = {}
+    if "seen" not in data:
+        data["seen"] = {}
+    return data
+
+
+def save_history(path: str, history: Dict) -> None:
+    save_json_file(path, history)
+
+
+def write_auto_state(can_clear_downloads: bool, reason: str, details: Optional[dict] = None) -> None:
+    payload = {
+        "can_clear_downloads": bool(can_clear_downloads),
+        "reason": reason,
+        "updated_at_epoch": int(time.time()),
+        "details": details or {},
+    }
+    save_json_file(AUTO_STATE_FILE, payload)
+    log(f"[AUTO_STATE] can_clear_downloads={payload['can_clear_downloads']} | reason={reason}")
+
+
 def sanitize_filename(name: str) -> str:
+    name = unicodedata.normalize("NFKD", name)
+    name = name.encode("ascii", "ignore").decode("ascii")
     name = re.sub(r'[<>:"/\\|?*]+', "_", name)
     name = re.sub(r"\s+", " ", name).strip()
+    if not name:
+        name = "video"
     return name[:180]
 
 
@@ -106,6 +129,12 @@ def normalize_nimo_href(href: str) -> Optional[str]:
 
 def extract_video_id(url: str) -> Optional[str]:
     m = re.search(r"/v/v-(\d+)", url)
+    return m.group(1) if m else None
+
+
+def extract_video_id_from_filename(path: Path) -> Optional[str]:
+    # expects names like: 3_10_2026 1859303657273951077 Title.mp4
+    m = re.search(r"(?:^|\s)(\d{10,})(?:\s|\.|$)", path.stem)
     return m.group(1) if m else None
 
 
@@ -309,7 +338,7 @@ def upload_video_to_youtube(
 
 
 def build_upload_title(entry: Dict) -> str:
-    if entry["date"]:
+    if entry.get("date"):
         return f"{entry['date']} - {entry['title']}"
     return entry["title"]
 
@@ -333,7 +362,7 @@ def run_nimo_downloader(video_url: str, output_path: str) -> None:
 
 
 def output_paths_for_entry(entry: Dict, download_dir: Path) -> Dict[str, Path]:
-    safe_base = sanitize_filename(f"{entry['date']} {entry['video_id']} {entry['title']}".strip())
+    safe_base = sanitize_filename(f"{entry.get('date', '')} {entry['video_id']} {entry.get('title', '')}".strip())
     mp4 = download_dir / f"{safe_base}.mp4"
     joined_ts = download_dir / f"{safe_base}.joined.ts"
     progress_json = download_dir / f"{safe_base}.progress.json"
@@ -344,11 +373,17 @@ def output_paths_for_entry(entry: Dict, download_dir: Path) -> Dict[str, Path]:
     }
 
 
+def guess_sidecar_paths_from_mp4(mp4_path: Path) -> Tuple[Path, Path]:
+    joined_ts = mp4_path.with_suffix(".joined.ts")
+    progress_json = mp4_path.with_suffix(".progress.json")
+    return joined_ts, progress_json
+
+
 def mark_seen(history: Dict, entry: Dict, status: str, note: str = "") -> None:
     history["seen"][entry["video_id"]] = {
-        "nimo_url": entry["url"],
-        "date": entry["date"],
-        "source_title": entry["title"],
+        "nimo_url": entry.get("url", ""),
+        "date": entry.get("date", ""),
+        "source_title": entry.get("title", ""),
         "status": status,
         "note": note,
         "updated_at_epoch": int(time.time()),
@@ -369,6 +404,147 @@ def safe_delete(path: Path, label: str, retries: int = 10, delay: float = 1.0) -
             warn(f"Failed to delete {label} (attempt {attempt}/{retries}): {path} | {e}")
             time.sleep(delay)
     return False
+
+
+def cleanup_uploaded_files(mp4_path: Path) -> None:
+    joined_ts, progress_json = guess_sidecar_paths_from_mp4(mp4_path)
+    log("Starting cleanup after successful upload...")
+    time.sleep(2)
+    ok_mp4 = safe_delete(mp4_path, "mp4")
+    ok_ts = safe_delete(joined_ts, "joined.ts")
+    ok_progress = safe_delete(progress_json, "progress.json")
+
+    if ok_mp4 and ok_ts and ok_progress:
+        log("Cleanup finished successfully")
+    else:
+        warn("Cleanup finished with some files not deleted")
+
+
+def process_completed_leftover_mp4s(history: Dict, youtube, download_dir: Path) -> Tuple[bool, bool]:
+    """
+    Returns:
+      (had_pending_uploadable_mp4_before_processing, had_failures)
+    """
+    mp4_files = sorted(download_dir.glob("*.mp4"))
+    if not mp4_files:
+        log("No completed leftover mp4 files found")
+        return False, False
+
+    log(f"Found {len(mp4_files)} completed leftover mp4 file(s)")
+    had_pending_uploadable_mp4 = False
+    had_failures = False
+
+    for mp4_path in mp4_files:
+        video_id = extract_video_id_from_filename(mp4_path)
+        if not video_id:
+            warn(f"Could not extract video id from leftover mp4 filename, preserving: {mp4_path.name}")
+            had_failures = True
+            continue
+
+        if video_id in history["uploaded"]:
+            log(f"Leftover mp4 already uploaded according to history, deleting local copy: {mp4_path.name}")
+            cleanup_uploaded_files(mp4_path)
+            continue
+
+        had_pending_uploadable_mp4 = True
+
+        # Build a minimal synthetic entry from filename
+        synthetic_entry = {
+            "video_id": video_id,
+            "url": f"https://www.nimo.tv/v/v-{video_id}",
+            "title": mp4_path.stem,
+            "date": "",
+        }
+
+        # Clean title a bit: remove leading date/id if present
+        m = re.match(r"^\s*\S+\s+(\d{10,})\s+(.*)$", mp4_path.stem)
+        if m:
+            synthetic_entry["title"] = m.group(2).strip() or mp4_path.stem
+
+        mark_seen(history, synthetic_entry, "upload_started", "recovered from leftover completed mp4")
+
+        try:
+            yt_title = build_upload_title(synthetic_entry)
+            yt_description = (
+                f"Imported from my Nimo replay.\n"
+                f"Recovered from completed local MP4.\n"
+                f"Source: {synthetic_entry['url']}"
+            )
+
+            log(f"Uploading leftover mp4 to YouTube: {mp4_path.name}")
+            youtube_video_id = upload_video_to_youtube(
+                youtube=youtube,
+                file_path=str(mp4_path),
+                title=yt_title,
+                description=yt_description,
+                privacy_status=YOUTUBE_PRIVACY_STATUS,
+                category_id="20",
+            )
+
+            log(f"Uploaded YouTube video id: {youtube_video_id}")
+            log(f"YouTube watch URL: https://www.youtube.com/watch?v={youtube_video_id}")
+
+            history["uploaded"][video_id] = {
+                "nimo_url": synthetic_entry["url"],
+                "date": synthetic_entry["date"],
+                "source_title": synthetic_entry["title"],
+                "youtube_video_id": youtube_video_id,
+                "uploaded_at_epoch": int(time.time()),
+                "local_mp4": str(mp4_path),
+            }
+            save_history(HISTORY_FILE, history)
+
+            mark_seen(history, synthetic_entry, "uploaded", "recovered from leftover completed mp4")
+
+            if DELETE_AFTER_SUCCESS:
+                cleanup_uploaded_files(mp4_path)
+
+        except Exception as e:
+            had_failures = True
+            mark_seen(history, synthetic_entry, "upload_failed", f"leftover mp4 upload failed: {e}")
+            warn(f"Failed uploading leftover mp4 {mp4_path.name}: {e}")
+
+    return had_pending_uploadable_mp4, had_failures
+
+
+def detect_continuable_work(download_dir: Path) -> List[dict]:
+    results = []
+
+    for progress_file in sorted(download_dir.glob("*.progress.json")):
+        try:
+            data = json.loads(progress_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            results.append({
+                "progress_file": str(progress_file),
+                "kind": "broken_progress",
+                "note": str(e),
+            })
+            continue
+
+        output = data.get("output", "")
+        next_index = int(data.get("next_index", 1))
+        total_segments = int(data.get("total_segments", 0))
+
+        if output:
+            out_mp4 = Path(output)
+        else:
+            out_mp4 = progress_file.with_suffix(".mp4")
+
+        joined_ts = out_mp4.with_suffix(".joined.ts")
+        video_url = data.get("url", "")
+
+        if joined_ts.exists() and next_index > 1 and total_segments >= next_index and video_url:
+            results.append({
+                "progress_file": str(progress_file),
+                "joined_ts": str(joined_ts),
+                "output": str(out_mp4),
+                "video_url": video_url,
+                "next_index": next_index,
+                "total_segments": total_segments,
+                "kind": "continuable_download",
+            })
+
+    return results
 
 
 def process_entry(entry: Dict, history: Dict, youtube, download_dir: Path) -> None:
@@ -398,7 +574,7 @@ def process_entry(entry: Dict, history: Dict, youtube, download_dir: Path) -> No
     yt_title = build_upload_title(entry)
     yt_description = (
         f"Imported from my Nimo replay.\n"
-        f"Original replay date: {entry['date']}\n"
+        f"Original replay date: {entry.get('date', '')}\n"
         f"Source: {entry['url']}"
     )
 
@@ -419,8 +595,8 @@ def process_entry(entry: Dict, history: Dict, youtube, download_dir: Path) -> No
 
     history["uploaded"][video_id] = {
         "nimo_url": entry["url"],
-        "date": entry["date"],
-        "source_title": entry["title"],
+        "date": entry.get("date", ""),
+        "source_title": entry.get("title", ""),
         "youtube_video_id": youtube_video_id,
         "uploaded_at_epoch": int(time.time()),
         "local_mp4": str(output_file),
@@ -430,15 +606,7 @@ def process_entry(entry: Dict, history: Dict, youtube, download_dir: Path) -> No
     mark_seen(history, entry, "uploaded")
 
     if DELETE_AFTER_SUCCESS:
-        log("Starting cleanup after successful upload...")
-        ok_mp4 = safe_delete(output_file, "mp4")
-        ok_ts = safe_delete(paths["joined_ts"], "joined.ts")
-        ok_progress = safe_delete(paths["progress_json"], "progress.json")
-
-        if ok_mp4 and ok_ts and ok_progress:
-            log("Cleanup finished successfully")
-        else:
-            warn("Cleanup finished with some files not deleted")
+        cleanup_uploaded_files(output_file)
     else:
         log("Keeping local files after successful upload")
 
@@ -450,21 +618,8 @@ def main():
     history = load_history(HISTORY_FILE)
     save_history(HISTORY_FILE, history)
 
-    log(f"Fetching replay page: {REPLAY_PAGE}")
-    entries = fetch_replay_entries(REPLAY_PAGE)
-    log(f"Found {len(entries)} replay entries")
-
-    if not entries:
-        warn("No replay entries found")
-        warn("Make sure Chrome is installed and chromedriver matches your Chrome version.")
-        return 1
-
-    unseen = [e for e in entries if e["video_id"] not in history["uploaded"]]
-    log(f"Unseen entries: {len(unseen)}")
-
-    if not unseen:
-        log("Nothing new to do")
-        return 0
+    # Default: do NOT clear unless we prove there is no useful work
+    write_auto_state(False, "startup_default_preserve")
 
     youtube = get_youtube_service()
 
@@ -476,6 +631,66 @@ def main():
         warn(f"Could not confirm YouTube channel name: {e}")
 
     had_failures = False
+
+    # 1) First, handle completed leftover mp4 files.
+    had_pending_leftover_mp4, leftover_mp4_failures = process_completed_leftover_mp4s(
+        history, youtube, download_dir
+    )
+    had_failures = had_failures or leftover_mp4_failures
+
+    if had_pending_leftover_mp4:
+        # We found at least one completed local mp4 that needed upload.
+        # nimo_auto should definitely not clear the folder before this pass.
+        write_auto_state(False, "leftover_completed_mp4_was_present")
+
+    # 2) Then detect resumable partial downloads.
+    continuable = detect_continuable_work(download_dir)
+    if continuable:
+        log(f"Found {len(continuable)} continuable partial download(s); preserving downloads folder")
+        for item in continuable:
+            log(
+                f"Continuable work: output={item['output']} | next={item['next_index']}/{item['total_segments']}"
+            )
+        write_auto_state(False, "continuable_work_present", {"count": len(continuable)})
+    else:
+        # No resumable work remains.
+        pass
+
+    # 3) Normal replay scraping.
+    log(f"Fetching replay page: {REPLAY_PAGE}")
+    entries = fetch_replay_entries(REPLAY_PAGE)
+    log(f"Found {len(entries)} replay entries")
+
+    if not entries:
+        warn("No replay entries found")
+        warn("Make sure Chrome is installed and chromedriver matches your Chrome version.")
+
+        # If no replay entries and no continuable work and no leftover completed mp4,
+        # then it is safe for nimo_auto to clear stale leftovers after this run.
+        if not continuable:
+            mp4_left = list(download_dir.glob("*.mp4"))
+            if not mp4_left:
+                write_auto_state(True, "no_replay_entries_and_no_recoverable_work")
+        return 1
+
+    unseen = [e for e in entries if e["video_id"] not in history["uploaded"]]
+    log(f"Unseen entries: {len(unseen)}")
+
+    if not unseen:
+        log("Nothing new to do")
+
+        # Safe to clear only if there is no completed mp4 awaiting upload and no continuable work.
+        mp4_left = [
+            p for p in download_dir.glob("*.mp4")
+            if (extract_video_id_from_filename(p) or "") not in history["uploaded"]
+        ]
+        continuable_after = detect_continuable_work(download_dir)
+
+        if not mp4_left and not continuable_after:
+            write_auto_state(True, "nothing_new_and_no_recoverable_work")
+        else:
+            write_auto_state(False, "preserve_due_to_remaining_recoverable_work")
+        return 0
 
     for entry in unseen:
         try:
@@ -492,6 +707,25 @@ def main():
             had_failures = True
             mark_seen(history, entry, "failed", str(e))
             warn(f"Failed for {entry['video_id']}: {e}")
+
+    # Final decision for nimo_auto.py:
+    mp4_left = [
+        p for p in download_dir.glob("*.mp4")
+        if (extract_video_id_from_filename(p) or "") not in history["uploaded"]
+    ]
+    continuable_after = detect_continuable_work(download_dir)
+
+    if had_failures or mp4_left or continuable_after:
+        reason_bits = []
+        if had_failures:
+            reason_bits.append("had_failures")
+        if mp4_left:
+            reason_bits.append("mp4_left_to_upload")
+        if continuable_after:
+            reason_bits.append("continuable_work_present")
+        write_auto_state(False, ",".join(reason_bits))
+    else:
+        write_auto_state(True, "all_work_finished_no_recoverable_leftovers")
 
     return 1 if had_failures else 0
 
