@@ -8,31 +8,17 @@ import time
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 from playwright.sync_api import sync_playwright
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
-
 
 def log(msg: str):
-    try:
-        print(f"[+] {msg}")
-    except UnicodeEncodeError:
-        safe = str(msg).encode("utf-8", errors="replace").decode("utf-8", errors="replace")
-        print(f"[+] {safe}")
+    print(f"[+] {msg}")
 
 
 def warn(msg: str):
-    try:
-        print(f"[!] {msg}")
-    except UnicodeEncodeError:
-        safe = str(msg).encode("utf-8", errors="replace").decode("utf-8", errors="replace")
-        print(f"[!] {safe}")
+    print(f"[!] {msg}")
 
 
 def ensure_ffmpeg():
@@ -69,25 +55,8 @@ def replace_query(url: str, query_dict: dict) -> str:
 
 
 def detect_quality_from_url(url: str) -> str:
-    m = re.search(r"(360|480|540|720|1080|1440|2160)p", url.lower())
+    m = re.search(r"(360|480|720|1080)p", url.lower())
     return m.group(1) + "P" if m else "unknown"
-
-
-def detect_quality_from_playlist_text(text: str) -> str:
-    best = 0
-    for line in text.splitlines():
-        m = re.search(r"RESOLUTION=(\d+)x(\d+)", line, re.I)
-        if m:
-            h = int(m.group(2))
-            best = max(best, h)
-    return f"{best}P" if best else "unknown"
-
-
-def quality_score_from_hint(hint: str) -> int:
-    m = re.search(r"(\d+)P", hint, re.I)
-    if m:
-        return int(m.group(1))
-    return 0
 
 
 def pick_highest_bandwidth_variant(master_url: str, text: str) -> str:
@@ -112,7 +81,7 @@ def pick_highest_bandwidth_variant(master_url: str, text: str) -> str:
                 variants.append((bw, res, url))
 
     if not variants:
-        warn("[QUALITY] No variant streams found, using master playlist directly")
+        warn("[QUALITY] No variant streams found, using master playlist")
         return master_url
 
     variants.sort(key=lambda x: x[0], reverse=True)
@@ -162,21 +131,9 @@ def extract_target_hyvid(page_url: str) -> str:
 def url_matches_target(url: str, target_hyvid: str) -> bool:
     try:
         q = parse_query(url)
-        if q.get("hyvid") == target_hyvid:
-            return True
-        if target_hyvid in url:
-            return True
-        return False
+        return q.get("hyvid") == target_hyvid
     except Exception:
         return False
-
-
-def is_master_playlist(text: str) -> bool:
-    return "#EXT-X-STREAM-INF" in text
-
-
-def is_media_playlist(text: str) -> bool:
-    return "#EXTM3U" in text and "#EXTINF" in text
 
 
 def build_full_segment_urls(media_playlist_url: str, media_playlist_text: str, ts_template_url: str) -> list[str]:
@@ -191,92 +148,17 @@ def build_full_segment_urls(media_playlist_url: str, media_playlist_text: str, t
     return full_urls
 
 
-def choose_best_playlist(candidate_urls: list[str], headers: dict, target_hyvid: str) -> tuple[str, str]:
-    checked = []
-    seen = set()
-
-    for url in candidate_urls:
-        if not url or url in seen:
-            continue
-        seen.add(url)
-
-        try:
-            text = http_get_text(url, headers, timeout=30)
-        except Exception as e:
-            warn(f"[PLAYLIST] Failed to fetch candidate: {url} | {e}")
-            continue
-
-        master = is_master_playlist(text)
-        media = is_media_playlist(text)
-        matches_target = url_matches_target(url, target_hyvid)
-        url_q = detect_quality_from_url(url)
-        text_q = detect_quality_from_playlist_text(text)
-
-        checked.append({
-            "url": url,
-            "text": text,
-            "master": master,
-            "media": media,
-            "matches_target": matches_target,
-            "url_quality": url_q,
-            "text_quality": text_q,
-        })
-
-    if not checked:
-        raise RuntimeError("Could not fetch any captured playlist candidates")
-
-    log("[PLAYLIST] Candidate playlists checked:")
-    for c in checked:
-        kind = "master" if c["master"] else ("media" if c["media"] else "unknown")
-        log(
-            f"  - kind={kind} target_match={c['matches_target']} "
-            f"url_hint={c['url_quality']} text_hint={c['text_quality']} {c['url']}"
-        )
-
-    def playlist_score(c):
-        return max(
-            quality_score_from_hint(c["url_quality"]),
-            quality_score_from_hint(c["text_quality"]),
-        )
-
-    masters = [c for c in checked if c["master"] and c["matches_target"]]
-    if not masters:
-        masters = [c for c in checked if c["master"]]
-    if masters:
-        masters.sort(key=playlist_score, reverse=True)
-        chosen = masters[0]
-        log(f"[PLAYLIST] Using master playlist: {chosen['url']}")
-        return chosen["url"], chosen["text"]
-
-    media = [c for c in checked if c["media"] and c["matches_target"]]
-    if not media:
-        media = [c for c in checked if c["media"]]
-    if media:
-        media.sort(key=playlist_score, reverse=True)
-        chosen = media[0]
-        log(f"[PLAYLIST] Using best media playlist fallback: {chosen['url']}")
-        return chosen["url"], chosen["text"]
-
-    chosen = checked[0]
-    warn(f"[PLAYLIST] Falling back to unknown playlist type: {chosen['url']}")
-    return chosen["url"], chosen["text"]
-
-
 def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
     target_hyvid = extract_target_hyvid(page_url)
 
     found = {
-        "m3u8_urls": [],
+        "m3u8": None,
         "ts": None,
     }
 
     def clear_found():
-        found["m3u8_urls"] = []
+        found["m3u8"] = None
         found["ts"] = None
-
-    def add_unique(lst, value):
-        if value not in lst:
-            lst.append(value)
 
     def parse_quality_label(text: str) -> int:
         if not text:
@@ -350,17 +232,14 @@ def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
                 if current_q < best_q:
                     rate_items.nth(best_idx).click(timeout=2000)
 
-                    try:
-                        page.wait_for_function(
-                            """target => {
-                                const el = document.querySelector('.rate-current');
-                                return el && el.textContent && el.textContent.trim().toUpperCase() === target.toUpperCase();
-                            }""",
-                            arg=best_label,
-                            timeout=5000,
-                        )
-                    except Exception:
-                        pass
+                    page.wait_for_function(
+                        """target => {
+                            const el = document.querySelector('.rate-current');
+                            return el && el.textContent && el.textContent.trim().toUpperCase() === target.toUpperCase();
+                        }""",
+                        arg=best_label,
+                        timeout=5000,
+                    )
 
                     log(f"Switched quality from {current_text or 'unknown'} to {best_label}")
                     log(f"[QUALITY] Player UI set to: {best_label or current_text}")
@@ -393,12 +272,15 @@ def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
                 return
 
             lu = url.lower()
+            if not url_matches_target(url, target_hyvid):
+                return
 
-            if ".m3u8" in lu and url_matches_target(url, target_hyvid):
-                add_unique(found["m3u8_urls"], url)
-                log(f"Captured target m3u8: {url}")
+            if ".m3u8" in lu:
+                if found["m3u8"] != url:
+                    found["m3u8"] = url
+                    log(f"Captured target m3u8: {url}")
 
-            if ".ts" in lu and url_matches_target(url, target_hyvid):
+            if ".ts" in lu:
                 if found["ts"] is None:
                     found["ts"] = url
                     log(f"Captured target ts template: {url}")
@@ -449,19 +331,10 @@ def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
         if selected_quality:
             log(f"[QUALITY] Confirmed player quality target: {selected_quality}")
 
-        log("[QUALITY] Waiting after quality change so the player can request new playlists...")
-        time.sleep(4)
-
         clear_found()
         log("[QUALITY] Cleared previously captured URLs after quality switch")
 
-        try:
-            page.reload(wait_until="domcontentloaded", timeout=90000)
-            log("[QUALITY] Reloaded page to force fresh playlist requests")
-        except Exception as e:
-            warn(f"[QUALITY] Reload failed: {e}")
-
-        for _ in range(3):
+        for _ in range(2):
             for sel in selectors:
                 try:
                     page.locator(sel).first.click(timeout=500)
@@ -471,15 +344,11 @@ def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
                 page.locator("#nimo-player, .nimo-player, .video-player, video").first.hover(timeout=1000)
             except Exception:
                 pass
-            try:
-                page.keyboard.press("Space")
-            except Exception:
-                pass
-            time.sleep(0.8)
+            time.sleep(0.5)
 
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
-            if found["m3u8_urls"] and found["ts"]:
+            if found["m3u8"] and found["ts"]:
                 break
 
             try:
@@ -502,22 +371,19 @@ def auto_capture_urls(page_url: str, profile_dir: str, timeout_seconds: float):
 
         context.close()
 
-    if not found["m3u8_urls"]:
+    if not found["m3u8"]:
         raise RuntimeError(f"No target .m3u8 captured for hyvid={target_hyvid}")
     if not found["ts"]:
         raise RuntimeError(f"No target .ts captured for hyvid={target_hyvid}")
 
-    log(f"[QUALITY] Captured {len(found['m3u8_urls'])} playlist candidate(s)")
-    for u in found["m3u8_urls"]:
-        log(f"[QUALITY] Candidate URL hint: {detect_quality_from_url(u)} | {u}")
-
+    log(f"[QUALITY] Final captured playlist URL hint: {detect_quality_from_url(found['m3u8'])}")
     log(f"[QUALITY] Final captured ts URL hint: {detect_quality_from_url(found['ts'])}")
 
-    return found["m3u8_urls"], found["ts"], ua, target_hyvid
+    return found["m3u8"], found["ts"], ua, target_hyvid
 
 
 def get_playlist_and_segments(page_url: str, profile_dir: str, detect_timeout: float):
-    m3u8_urls, ts_template_url, ua, target_hyvid = auto_capture_urls(
+    m3u8_url, ts_template_url, ua, target_hyvid = auto_capture_urls(
         page_url,
         profile_dir,
         detect_timeout,
@@ -529,20 +395,18 @@ def get_playlist_and_segments(page_url: str, profile_dir: str, detect_timeout: f
     }
 
     log(f"Locked to target hyvid={target_hyvid}")
-    log("Downloading playlist candidates...")
+    log("Downloading playlist...")
+    playlist_text = http_get_text(m3u8_url, headers)
 
-    chosen_playlist_url, playlist_text = choose_best_playlist(m3u8_urls, headers, target_hyvid)
-
-    if is_master_playlist(playlist_text):
-        log(f"[QUALITY] Master playlist detected from URL hint: {detect_quality_from_url(chosen_playlist_url)}")
-        media_playlist_url = pick_highest_bandwidth_variant(chosen_playlist_url, playlist_text)
+    if "#EXT-X-STREAM-INF" in playlist_text:
+        media_playlist_url = pick_highest_bandwidth_variant(m3u8_url, playlist_text)
         log(f"Using variant playlist: {media_playlist_url}")
-        log(f"[QUALITY] Variant URL hint: {detect_quality_from_url(media_playlist_url)}")
+        log(f"[QUALITY] Detected from URL: {detect_quality_from_url(media_playlist_url)}")
         media_playlist_text = http_get_text(media_playlist_url, headers)
     else:
-        media_playlist_url = chosen_playlist_url
+        media_playlist_url = m3u8_url
         media_playlist_text = playlist_text
-        log(f"[QUALITY] Media playlist in use; URL hint: {detect_quality_from_url(media_playlist_url)}")
+        log(f"[QUALITY] Non-master playlist in use; URL hint: {detect_quality_from_url(media_playlist_url)}")
 
     segment_urls = build_full_segment_urls(media_playlist_url, media_playlist_text, ts_template_url)
     if not segment_urls:
@@ -708,9 +572,5 @@ if __name__ == "__main__":
         print("\n[x] Cancelled")
         sys.exit(1)
     except Exception as e:
-        try:
-            print(f"[x] {e}", file=sys.stderr)
-        except UnicodeEncodeError:
-            safe = str(e).encode("utf-8", errors="replace").decode("utf-8", errors="replace")
-            print(f"[x] {safe}", file=sys.stderr)
+        print(f"[x] {e}", file=sys.stderr)
         sys.exit(1)
