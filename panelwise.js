@@ -57,21 +57,54 @@ function loadInputText({ text, file }) {
   return fs.readFileSync(path.resolve(file), "utf8").trim();
 }
 
+// Improved sentence splitting that handles quotes and abbreviations
 function splitIntoSentences(text) {
-  if (typeof Intl !== "undefined" && Intl.Segmenter) {
-    const segmenter = new Intl.Segmenter("en", { granularity: "sentence" });
-    return [...segmenter.segment(text)]
-      .map((s) => s.segment.trim())
-      .filter(Boolean);
+  // Common abbreviations that should not end a sentence
+  const abbreviations = new Set([
+    'mr', 'mrs', 'ms', 'dr', 'prof', 'rev', 'hon', 'st', 'ave', 'blvd',
+    'rd', 'etc', 'vs', 'e.g', 'i.e', 'a.m', 'p.m', 'fig', 'vol', 'no',
+    'inc', 'corp', 'ltd', 'jr', 'sr', 'phd', 'md', 'al', 'p.s'
+  ]);
+
+  // Replace quoted content with placeholders to protect internal punctuation
+  const quotes = [];
+  const noQuotes = text.replace(/"[^"]*"|'[^']*'|`[^`]*`/g, (match) => {
+    quotes.push(match);
+    return `__QUOTE_${quotes.length - 1}__`;
+  });
+
+  // Split on . ? ! followed by whitespace and a capital letter (or end of string)
+  const rawSentences = noQuotes.split(/(?<=[.!?])\s+(?=[A-Z"']|$)/g);
+
+  const sentences = [];
+  for (let raw of rawSentences) {
+    // Restore quoted content
+    raw = raw.replace(/__QUOTE_(\d+)__/g, (_, idx) => quotes[parseInt(idx)]);
+    raw = raw.trim();
+    if (!raw) continue;
+
+    // Check if the split was caused by an abbreviation
+    const match = raw.match(/\b([a-z]+)\.$/i);
+    const lastWord = match ? match[1].toLowerCase() : null;
+    if (lastWord && abbreviations.has(lastWord)) {
+      // Merge with previous sentence
+      if (sentences.length) {
+        sentences[sentences.length - 1] += ' ' + raw;
+      } else {
+        sentences.push(raw);
+      }
+    } else {
+      sentences.push(raw);
+    }
   }
 
-  return (
-    text
-      .replace(/\s+/g, " ")
-      .match(/[^.!?]+[.!?]+|[^.!?]+$/g)
-      ?.map((s) => s.trim())
-      .filter(Boolean) || []
-  );
+  // If we still have only 1 sentence but there are many periods, try a simpler approach
+  if (sentences.length === 1 && text.includes('. ') && text.length > 500) {
+    const simpler = text.split(/(?<=[.!?])\s+(?=[A-Z])/);
+    if (simpler.length > 1) return simpler.filter(s => s.trim().length > 0);
+  }
+
+  return sentences;
 }
 
 function sanitizeFilename(s, max = 80) {
@@ -392,29 +425,34 @@ async function waitForNewImages(page, previousUrls, timeoutMs = 180000) {
   throw new Error("Timed out waiting for newly generated images.");
 }
 
-async function downloadImageFromPage(page, url, outPath) {
-  const result = await page.evaluate(async (src) => {
-    try {
-      const res = await fetch(src);
-      const blob = await res.blob();
+// NEW: Download image from an img element using canvas (works even if blob URL is revoked)
+async function downloadImageFromPage(page, imgLocator, outPath) {
+  const dataUrl = await imgLocator.evaluate((img) => {
+    return new Promise((resolve, reject) => {
+      const loadAndConvert = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          resolve(canvas.toDataURL());
+        } catch (err) {
+          reject(err);
+        }
+      };
 
-      return await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(String(reader.result));
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
-    } catch (err) {
-      return { error: String(err) };
-    }
-  }, url);
+      if (img.complete && img.naturalWidth > 0) {
+        loadAndConvert();
+      } else {
+        img.addEventListener('load', loadAndConvert);
+        img.addEventListener('error', (err) => reject(err));
+      }
+    });
+  });
 
-  if (!result || typeof result !== "string" || !result.startsWith("data:")) {
-    throw new Error(`Failed to fetch image: ${url}`);
-  }
-
-  const match = result.match(/^data:(.*?);base64,(.*)$/);
-  if (!match) throw new Error(`Unexpected data URL format for: ${url}`);
+  const match = dataUrl.match(/^data:(.*?);base64,(.*)$/);
+  if (!match) throw new Error(`Invalid data URL for image`);
 
   const mime = match[1];
   const base64 = match[2];
@@ -443,18 +481,16 @@ async function main() {
   console.log(`Found ${sentences.length} sentence(s).`);
 
   // Launch a persistent Chrome instance with a dedicated profile folder.
-  // The profile folder keeps cookies and login state across runs.
   const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-    channel: "chrome",            // use normal Chrome, not Chromium
+    channel: "chrome",
     headless: args.headless,
     viewport: { width: 1440, height: 1100 },
     args: [
-      "--disable-blink-features=AutomationControlled", // hides automation flags
+      "--disable-blink-features=AutomationControlled",
       "--disable-features=ChromeWhatsNewUI",
       "--no-first-run",
       "--disable-default-apps",
       "--disable-sync",
-      // Optional: if you encounter GPU issues, add "--disable-gpu"
     ],
   });
 
@@ -462,12 +498,7 @@ async function main() {
   await page.goto(GEMINI_URL, { waitUntil: "domcontentloaded" });
 
   console.log("\nOpened Gemini URL.");
-
-  // Wait for manual login only on the first run.
-  // On subsequent runs the profile already contains the login cookies,
-  // so the user can just press Enter without logging in again.
   await waitForManualLogin();
-
   await waitForGeminiReady(page);
 
   const manifest = [];
@@ -506,7 +537,6 @@ async function main() {
     console.log(`\n[${i + 1}/${sentences.length}] Sending sentence: ${sentence}`);
 
     const beforeUrls = await getCurrentImageUrls(page);
-
     await submitPrompt(page, prompt);
 
     let newUrls;
@@ -526,11 +556,16 @@ async function main() {
 
     const savedImages = [];
     for (let j = 0; j < newUrls.length; j++) {
+      const url = newUrls[j];
+      // Find the img element that has this blob URL as its src
+      const imgLocator = page.locator(`img[src="${url}"]`).first();
+      await imgLocator.waitFor({ state: "attached", timeout: 5000 });
+
       const baseName = `${String(i + 1).padStart(4, "0")}_${sanitizeFilename(sentence, 50)}_${j + 1}.png`;
       const targetPath = path.join(IMAGE_DIR, baseName);
 
       try {
-        const savedPath = await downloadImageFromPage(page, newUrls[j], targetPath);
+        const savedPath = await downloadImageFromPage(page, imgLocator, targetPath);
         savedImages.push(savedPath);
         console.log(`Saved ${savedPath}`);
       } catch (err) {
