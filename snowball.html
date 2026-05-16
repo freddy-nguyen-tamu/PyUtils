@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Snowball Cliff Arena</title>
+  <style>
+    :root {
+      --bg1: #0c1b34;
+      --bg2: #153c6d;
+      --ice: #c7eeff;
+      --ice2: #8fd3ff;
+      --text: #eff9ff;
+      --accent: #7ae2ff;
+      --danger: #ff7e7e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: Inter, system-ui, Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 20% 20%, rgba(255,255,255,0.08), transparent 25%),
+        radial-gradient(circle at 80% 10%, rgba(255,255,255,0.05), transparent 20%),
+        linear-gradient(180deg, var(--bg2), var(--bg1));
+    }
+    canvas { display: block; }
+    .hud {
+      position: fixed;
+      left: 16px;
+      top: 16px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(8, 18, 38, 0.55);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.12);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+      min-width: 280px;
+      pointer-events: none;
+    }
+    .hud .title {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: 0.3px;
+      margin-bottom: 8px;
+      color: white;
+    }
+    .hud .row { margin: 4px 0; font-size: 14px; }
+    .hud .small { opacity: 0.85; font-size: 12px; }
+    .center-msg {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      padding: 18px 24px;
+      border-radius: 20px;
+      background: rgba(9, 19, 42, 0.72);
+      border: 1px solid rgba(255,255,255,0.14);
+      backdrop-filter: blur(10px);
+      text-align: center;
+      min-width: 280px;
+      display: none;
+    }
+    .center-msg h1 { margin: 0 0 8px; font-size: 32px; }
+    .center-msg p { margin: 0 0 12px; opacity: 0.92; }
+    .center-msg button {
+      pointer-events: auto;
+      border: 0;
+      cursor: pointer;
+      padding: 10px 16px;
+      border-radius: 12px;
+      font-weight: 700;
+      background: linear-gradient(180deg, #bff5ff, #76d9ff);
+      color: #08213b;
+      box-shadow: 0 10px 25px rgba(66,196,255,0.28);
+    }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="hud" id="hud"></div>
+<div class="center-msg" id="overlay">
+  <h1 id="overlayTitle">Snowball Cliff Arena</h1>
+  <p id="overlayText">Roll, grow, and knock everyone off the cliff.</p>
+  <button id="restartBtn">Start / Restart</button>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const hud = document.getElementById('hud');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlayTitle');
+  const overlayText = document.getElementById('overlayText');
+  const restartBtn = document.getElementById('restartBtn');
+
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const len = (x, y) => Math.hypot(x, y);
+  const normalize = (x, y) => {
+    const l = Math.hypot(x, y) || 1;
+    return { x: x / l, y: y / l };
+  };
+  const angleDiff = (a, b) => {
+    let d = (b - a + Math.PI) % (Math.PI * 2) - Math.PI;
+    if (d < -Math.PI) d += Math.PI * 2;
+    return d;
+  };
+
+  let W = innerWidth;
+  let H = innerHeight;
+  canvas.width = W;
+  canvas.height = H;
+
+  const game = {
+    arena: {
+      x: 0,
+      y: 0,
+      r: 560,
+      wobble: []
+    },
+    camera: { x: 0, y: 0, zoom: 1 },
+    players: [],
+    pellets: [],
+    particles: [],
+    keys: Object.create(null),
+    over: false,
+    winner: null,
+    lastTime: performance.now(),
+    startTime: 0,
+    shrinkTimer: 0,
+    round: 1,
+  };
+
+  const CONFIG = {
+    humanName: 'You',
+    botCount: 6,
+    pelletCount: 140,
+    pelletRespawnMin: 110,
+    pelletRespawnMax: 150,
+    gravityFallSpeed: 430,
+    edgeWarningBand: 90,
+    shrinkStart: 45,
+    shrinkPerSecond: 1.8,
+    minArenaRadius: 320,
+  };
+
+  const COLORS = [
+    '#ff7272', '#77d1ff', '#8eff9c', '#f4d56d', '#d49eff', '#ff9ec9', '#8ce6d6', '#ffb36f'
+  ];
+
+  const BOT_NAMES = ['Blizzard', 'Yuki', 'Frostbyte', 'Avalanche', 'Nimbus', 'Shiver', 'Rime', 'Comet'];
+
+  class Pellet {
+    constructor(x, y) {
+      this.x = x;
+      this.y = y;
+      this.r = rand(3.8, 5.4);
+      this.spin = rand(0, TAU);
+    }
+    draw() {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.spin);
+      const g = ctx.createRadialGradient(-1, -1, 0, 0, 0, this.r * 1.8);
+      g.addColorStop(0, 'rgba(255,255,255,0.98)');
+      g.addColorStop(1, 'rgba(170,235,255,0.7)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.r, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  class Particle {
+    constructor(x, y, vx, vy, size, life, color) {
+      this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+      this.size = size; this.life = life; this.maxLife = life; this.color = color;
+    }
+    update(dt) {
+      this.life -= dt;
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      this.vx *= Math.pow(0.96, dt * 60);
+      this.vy *= Math.pow(0.96, dt * 60);
+      return this.life > 0;
+    }
+    draw() {
+      const a = Math.max(0, this.life / this.maxLife);
+      ctx.globalAlpha = a;
+      ctx.fillStyle = this.color;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size * a, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  class SnowballPlayer {
+    constructor({ name, x, y, color, isHuman = false, skill = 0.8 }) {
+      this.name = name;
+      this.x = x;
+      this.y = y;
+      this.vx = 0;
+      this.vy = 0;
+      this.dir = rand(0, TAU);
+      this.inputX = 0;
+      this.inputY = 0;
+      this.boosting = false;
+      this.boostCd = 0;
+      this.boostEnergy = 100;
+      this.r = 18;
+      this.mass = 1;
+      this.color = color;
+      this.isHuman = isHuman;
+      this.skill = skill;
+      this.alive = true;
+      this.falling = false;
+      this.fallV = 0;
+      this.score = 0;
+      this.ai = {
+        timer: 0,
+        targetPellet: null,
+        targetEnemy: null,
+        strafeDir: Math.random() < 0.5 ? -1 : 1,
+        aggression: rand(0.52, 0.92) * skill,
+        greed: rand(0.45, 0.9),
+        fear: rand(0.4, 0.88),
+        burstBias: rand(0.5, 1),
+      };
+    }
+
+    recalc() {
+      this.mass = Math.max(1, this.r * this.r * 0.04);
+    }
+
+    getTopSpeed() {
+      // Much faster overall movement so the arena feels large but traversable.
+      // Bigger snowballs are still slower, but not sluggish.
+      return clamp(520 - this.r * 2.8, 220, 480);
+    }
+
+    getAccel() {
+      // Strong acceleration with some size penalty.
+      return clamp(980 - this.r * 7.5, 300, 900);
+    }
+
+    getTurnRate() {
+      return clamp(13 - this.r * 0.055, 5, 13);
+    }
+
+    gain(amount) {
+      this.r = clamp(this.r + amount, 12, 54);
+      this.recalc();
+    }
+
+    useBoost(dt) {
+      if (!this.boosting || this.boostEnergy <= 0) return 1;
+      this.boostEnergy = Math.max(0, this.boostEnergy - 38 * dt);
+      return 2.1;
+    }
+
+    regenBoost(dt) {
+      if (!this.boosting) this.boostEnergy = Math.min(100, this.boostEnergy + 17 * dt);
+      if (this.boostCd > 0) this.boostCd -= dt;
+    }
+
+    thinkAI(dt, allPlayers, pellets, arena) {
+      this.ai.timer -= dt;
+      const centerDx = -this.x;
+      const centerDy = -this.y;
+      const centerDist = Math.hypot(centerDx, centerDy);
+      const edgeDist = arena.r - centerDist;
+
+      let nearestThreat = null;
+      let nearestPrey = null;
+      let nearestThreatD = Infinity;
+      let nearestPreyScore = -Infinity;
+
+      for (const other of allPlayers) {
+        if (!other.alive || other === this) continue;
+        const d = dist(this, other);
+        const bigger = other.r > this.r * 1.08;
+        const smaller = this.r > other.r * 1.06;
+
+        if (bigger && d < nearestThreatD) {
+          nearestThreatD = d;
+          nearestThreat = other;
+        }
+
+        const edgePressure = Math.max(0, (arena.r - Math.hypot(other.x, other.y)) < 130 ? 1 : 0);
+        const preyScore = (smaller ? 1 : 0) * (220 - d) + edgePressure * 90 - other.r * 0.5;
+        if (preyScore > nearestPreyScore) {
+          nearestPreyScore = preyScore;
+          nearestPrey = other;
+        }
+      }
+
+      let desired = { x: 0, y: 0 };
+      let wantBoost = false;
+
+      const predictAvoidEdge = () => {
+        const futureX = this.x + this.vx * 0.7;
+        const futureY = this.y + this.vy * 0.7;
+        const away = normalize(-futureX, -futureY);
+        desired.x += away.x * 2.4;
+        desired.y += away.y * 2.4;
+        const tangent = normalize(-away.y, away.x);
+        desired.x += tangent.x * 0.45 * this.ai.strafeDir;
+        desired.y += tangent.y * 0.45 * this.ai.strafeDir;
+      };
+
+      const evadeThreat = (threat) => {
+        const dx = this.x - threat.x;
+        const dy = this.y - threat.y;
+        const away = normalize(dx, dy);
+        const center = normalize(-this.x, -this.y);
+        desired.x += away.x * (1.8 + this.ai.fear);
+        desired.y += away.y * (1.8 + this.ai.fear);
+        desired.x += center.x * 1.6;
+        desired.y += center.y * 1.6;
+        const closing = ((threat.vx - this.vx) * dx + (threat.vy - this.vy) * dy) < 0;
+        if (nearestThreatD < 130 && closing && this.boostEnergy > 18) wantBoost = true;
+      };
+
+      const chasePrey = (prey) => {
+        const lead = 0.55 + (1 - this.skill) * 0.18;
+        const tx = prey.x + prey.vx * lead;
+        const ty = prey.y + prey.vy * lead;
+        const to = normalize(tx - this.x, ty - this.y);
+        const centerPull = normalize(-this.x, -this.y);
+        desired.x += to.x * (1.3 + this.ai.aggression * 1.4);
+        desired.y += to.y * (1.3 + this.ai.aggression * 1.4);
+        desired.x += centerPull.x * 0.45;
+        desired.y += centerPull.y * 0.45;
+
+        const preyEdge = arena.r - Math.hypot(prey.x, prey.y);
+        if (preyEdge < 120) {
+          const outward = normalize(prey.x, prey.y);
+          desired.x += outward.x * 0.7;
+          desired.y += outward.y * 0.7;
+        }
+
+        const mySpeed = Math.hypot(this.vx, this.vy);
+        const facing = Math.abs(angleDiff(this.dir, Math.atan2(to.y, to.x)));
+        if (dist(this, prey) < 145 && preyEdge < 150 && facing < 0.45 && mySpeed > this.getTopSpeed() * 0.5 && this.boostEnergy > 25) {
+          wantBoost = true;
+        }
+      };
+
+      const seekPellet = () => {
+        let best = null;
+        let bestScore = -Infinity;
+        for (const p of pellets) {
+          const d = Math.hypot(p.x - this.x, p.y - this.y);
+          const centerSafety = (arena.r - Math.hypot(p.x, p.y)) / arena.r;
+          const score = centerSafety * 120 + this.ai.greed * 90 - d;
+          if (score > bestScore) {
+            bestScore = score;
+            best = p;
+          }
+        }
+        if (best) {
+          const to = normalize(best.x - this.x, best.y - this.y);
+          desired.x += to.x * 1.25;
+          desired.y += to.y * 1.25;
+        }
+      };
+
+      if (edgeDist < 110 || centerDist + Math.hypot(this.vx, this.vy) * 0.45 > arena.r - this.r - 18) {
+        predictAvoidEdge();
+      }
+
+      if (nearestThreat && (nearestThreatD < 170 + (54 - this.r) * 1.8 || edgeDist < 160)) {
+        evadeThreat(nearestThreat);
+      } else if (nearestPrey && nearestPreyScore > -10) {
+        chasePrey(nearestPrey);
+      } else {
+        seekPellet();
+        const center = normalize(-this.x, -this.y);
+        desired.x += center.x * 0.25;
+        desired.y += center.y * 0.25;
+      }
+
+      if (this.ai.timer <= 0) {
+        this.ai.timer = rand(0.06, 0.18) * (1.15 - this.skill * 0.25);
+        if (Math.random() < 0.18) this.ai.strafeDir *= -1;
+      }
+
+      const n = normalize(desired.x, desired.y);
+      this.inputX = n.x;
+      this.inputY = n.y;
+      this.boosting = wantBoost && this.boostCd <= 0;
+    }
+
+    update(dt, players, pellets, arena) {
+      if (!this.alive) {
+        if (this.falling) {
+          this.fallV += CONFIG.gravityFallSpeed * dt;
+          this.y += this.fallV * dt;
+          this.r *= Math.pow(0.996, dt * 60);
+        }
+        return;
+      }
+
+      this.regenBoost(dt);
+      const boostMult = this.useBoost(dt);
+      const accel = this.getAccel() * boostMult;
+      const topSpeed = this.getTopSpeed() * (this.boosting ? 1.38 : 1);
+      const linearDamping = Math.pow(this.boosting ? 0.975 : 0.955, dt * 60);
+
+      this.vx += this.inputX * accel * dt;
+      this.vy += this.inputY * accel * dt;
+
+      const sp = Math.hypot(this.vx, this.vy);
+      if (sp > topSpeed) {
+        const n = normalize(this.vx, this.vy);
+        this.vx = n.x * topSpeed;
+        this.vy = n.y * topSpeed;
+      }
+
+      this.vx *= linearDamping;
+      this.vy *= linearDamping;
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+
+      if (sp > 10) {
+        const targetDir = Math.atan2(this.vy, this.vx);
+        this.dir += angleDiff(this.dir, targetDir) * clamp(this.getTurnRate() * dt, 0, 1);
+      }
+
+      for (let i = pellets.length - 1; i >= 0; i--) {
+        const p = pellets[i];
+        const dx = p.x - this.x;
+        const dy = p.y - this.y;
+        const rr = this.r + p.r;
+        if (dx * dx + dy * dy <= rr * rr) {
+          pellets.splice(i, 1);
+          this.gain(0.24);
+          this.score += 1;
+          for (let k = 0; k < 3; k++) {
+            game.particles.push(new Particle(
+              p.x, p.y,
+              rand(-35, 35), rand(-35, 35),
+              rand(1.8, 3.6), rand(0.2, 0.45), 'rgba(255,255,255,0.95)'
+            ));
+          }
+        }
+      }
+
+      const dCenter = Math.hypot(this.x, this.y);
+      if (dCenter > arena.r - this.r * 0.35) {
+        const n = normalize(this.x, this.y);
+        const over = dCenter - (arena.r - this.r * 0.35);
+        this.vx += n.x * 180 * dt;
+        this.vy += n.y * 180 * dt;
+        this.x += n.x * over * 0.55;
+        this.y += n.y * over * 0.55;
+
+        if (dCenter > arena.r + this.r * 0.4) {
+          this.alive = false;
+          this.falling = true;
+          this.boosting = false;
+          for (let k = 0; k < 18; k++) {
+            game.particles.push(new Particle(
+              this.x - n.x * this.r * 0.35,
+              this.y - n.y * this.r * 0.35,
+              rand(-120, 120), rand(-120, 120),
+              rand(3, 7), rand(0.5, 1.1), 'rgba(255,255,255,0.9)'
+            ));
+          }
+        }
+      }
+    }
+
+    drawLabel() {
+      if (!this.alive) return;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.font = '700 14px Inter, Arial';
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+      ctx.strokeText(this.name, this.x, this.y - this.r - 14);
+      ctx.fillStyle = this.isHuman ? '#fff3a9' : '#ffffff';
+      ctx.fillText(this.name, this.x, this.y - this.r - 14);
+      ctx.restore();
+    }
+
+    drawBody() {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.dir);
+
+      const shadowAlpha = this.alive ? 0.22 : 0.1;
+      ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
+      ctx.beginPath();
+      ctx.ellipse(4, this.r * 0.72, this.r * 0.9, this.r * 0.5, 0, 0, TAU);
+      ctx.fill();
+
+      const gradient = ctx.createRadialGradient(-this.r * 0.35, -this.r * 0.4, this.r * 0.15, 0, 0, this.r * 1.05);
+      gradient.addColorStop(0, '#ffffff');
+      gradient.addColorStop(0.78, '#d7f2ff');
+      gradient.addColorStop(1, '#98d8ff');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      const wobble = Math.sin(performance.now() * 0.004 + this.r) * this.r * 0.02;
+      ctx.arc(0, 0, this.r + wobble, 0, TAU);
+      ctx.fill();
+
+      ctx.lineWidth = Math.max(2, this.r * 0.12);
+      ctx.strokeStyle = this.color;
+      ctx.stroke();
+
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.ellipse(-this.r * 0.28, -this.r * 0.35, this.r * 0.34, this.r * 0.22, -0.7, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      if (this.boosting && this.alive) {
+        ctx.strokeStyle = 'rgba(135, 227, 255, 0.85)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, this.r + 4 + Math.sin(performance.now() * 0.02) * 1.6, 0, TAU);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function resize() {
+    W = innerWidth;
+    H = innerHeight;
+    canvas.width = W;
+    canvas.height = H;
+  }
+  addEventListener('resize', resize);
+
+  addEventListener('keydown', (e) => {
+    game.keys[e.key.toLowerCase()] = true;
+    if (e.code === 'Space') game.keys.space = true;
+    if (game.over && (e.key === 'Enter' || e.code === 'Space')) reset();
+  });
+  addEventListener('keyup', (e) => {
+    game.keys[e.key.toLowerCase()] = false;
+    if (e.code === 'Space') game.keys.space = false;
+  });
+  restartBtn.addEventListener('click', reset);
+
+  function randomPointInArena(margin = 0) {
+    const a = rand(0, TAU);
+    const r = Math.sqrt(Math.random()) * (game.arena.r - margin);
+    return { x: Math.cos(a) * r, y: Math.sin(a) * r };
+  }
+
+  function spawnPellet() {
+    const p = randomPointInArena(26);
+    game.pellets.push(new Pellet(p.x, p.y));
+  }
+
+  function buildArenaWobble() {
+    game.arena.wobble.length = 0;
+    const steps = 96;
+    for (let i = 0; i < steps; i++) {
+      game.arena.wobble.push(rand(-16, 16));
+    }
+  }
+
+  function reset() {
+    game.players.length = 0;
+    game.pellets.length = 0;
+    game.particles.length = 0;
+    game.over = false;
+    game.winner = null;
+    game.startTime = performance.now() * 0.001;
+    game.shrinkTimer = 0;
+    game.arena.r = 280;
+    buildArenaWobble();
+
+    const humanPos = randomPointInArena(120);
+    const human = new SnowballPlayer({
+      name: CONFIG.humanName,
+      x: humanPos.x,
+      y: humanPos.y,
+      color: '#ffd76d',
+      isHuman: true,
+      skill: 1
+    });
+    human.gain(0);
+    game.players.push(human);
+
+    for (let i = 0; i < CONFIG.botCount; i++) {
+      let p = randomPointInArena(130);
+      let tries = 0;
+      while (Math.hypot(p.x - humanPos.x, p.y - humanPos.y) < 120 && tries++ < 20) {
+        p = randomPointInArena(130);
+      }
+      const bot = new SnowballPlayer({
+        name: BOT_NAMES[i % BOT_NAMES.length],
+        x: p.x,
+        y: p.y,
+        color: COLORS[i % COLORS.length],
+        isHuman: false,
+        skill: rand(0.76, 0.98)
+      });
+      bot.gain(rand(0, 3.5));
+      game.players.push(bot);
+    }
+
+    for (let i = 0; i < CONFIG.pelletCount; i++) spawnPellet();
+    overlay.style.display = 'none';
+  }
+
+  function updateHumanInput(player) {
+    const left = game.keys['a'] || game.keys['arrowleft'];
+    const right = game.keys['d'] || game.keys['arrowright'];
+    const up = game.keys['w'] || game.keys['arrowup'];
+    const down = game.keys['s'] || game.keys['arrowdown'];
+    let ix = (right ? 1 : 0) - (left ? 1 : 0);
+    let iy = (down ? 1 : 0) - (up ? 1 : 0);
+    const n = normalize(ix, iy);
+    player.inputX = ix === 0 && iy === 0 ? 0 : n.x;
+    player.inputY = ix === 0 && iy === 0 ? 0 : n.y;
+    player.boosting = !!game.keys.space && player.boostCd <= 0;
+  }
+
+  function resolvePlayerCollisions(players, dt) {
+    for (let i = 0; i < players.length; i++) {
+      const a = players[i];
+      if (!a.alive) continue;
+
+      for (let j = i + 1; j < players.length; j++) {
+        const b = players[j];
+        if (!b.alive) continue;
+
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d = Math.hypot(dx, dy) || 0.0001;
+        const minD = a.r + b.r;
+        if (d >= minD) continue;
+
+        const n = { x: dx / d, y: dy / d };
+        const tx = -n.y;
+        const ty = n.x;
+        const penetration = minD - d;
+
+        const totalMass = a.mass + b.mass;
+        const correction = penetration * 0.92;
+        a.x -= n.x * correction * (b.mass / totalMass);
+        a.y -= n.y * correction * (b.mass / totalMass);
+        b.x += n.x * correction * (a.mass / totalMass);
+        b.y += n.y * correction * (a.mass / totalMass);
+
+        const rvx = b.vx - a.vx;
+        const rvy = b.vy - a.vy;
+        const relNormalSpeed = rvx * n.x + rvy * n.y;
+        const relTangentSpeed = rvx * tx + rvy * ty;
+        const impactSpeed = Math.abs(relNormalSpeed);
+        const restitution = clamp(0.75 + impactSpeed / 350, 0.75, 1.2);
+        const invMassA = 1 / a.mass;
+        const invMassB = 1 / b.mass;
+        const reducedMass = 1 / (invMassA + invMassB);
+        const springK = 42;
+        const dampingC = 1.15;
+        const separationBias = springK * penetration;
+        const dampingBias = relNormalSpeed < 0 ? (-relNormalSpeed * dampingC) : 0;
+        const impulseMag = (separationBias + dampingBias + Math.max(0, -(1 + restitution) * relNormalSpeed)) * reducedMass;
+
+        a.vx -= (impulseMag * n.x) * invMassA;
+        a.vy -= (impulseMag * n.y) * invMassA;
+        b.vx += (impulseMag * n.x) * invMassB;
+        b.vy += (impulseMag * n.y) * invMassB;
+
+        const frictionImpulse = relTangentSpeed * reducedMass * 0.16;
+        a.vx += frictionImpulse * tx * invMassA;
+        a.vy += frictionImpulse * ty * invMassA;
+        b.vx -= frictionImpulse * tx * invMassB;
+        b.vy -= frictionImpulse * ty * invMassB;
+
+        const sizeDelta = clamp((a.r - b.r) / 20, -1.2, 1.2);
+        const chargeA = Math.max(0, a.vx * n.x + a.vy * n.y);
+        const chargeB = Math.max(0, -(b.vx * n.x + b.vy * n.y));
+        const authority = (chargeA + chargeB) * 0.035;
+        if (sizeDelta !== 0) {
+          a.vx += n.x * authority * sizeDelta * 0.35;
+          a.vy += n.y * authority * sizeDelta * 0.35;
+          b.vx -= n.x * authority * sizeDelta * 0.35;
+          b.vy -= n.y * authority * sizeDelta * 0.35;
+        }
+
+        if (impactSpeed > 22 || penetration > 1.5) {
+          const contactX = (a.x + b.x) * 0.5;
+          const contactY = (a.y + b.y) * 0.5;
+          const burst = clamp(impactSpeed / 120, 0.5, 2.4);
+          for (let k = 0; k < 4; k++) {
+            game.particles.push(new Particle(
+              contactX,
+              contactY,
+              rand(-85, 85) * burst,
+              rand(-85, 85) * burst,
+              rand(2, 4.8),
+              rand(0.18, 0.38),
+              'rgba(255,255,255,0.92)'
+            ));
+          }
+        }
+
+        const bodyCheckPower = Math.max(0, impactSpeed - 120) * 0.0012;
+        if (bodyCheckPower > 0) {
+          if (a.r > b.r + 1.5) {
+            a.gain(bodyCheckPower * 0.12);
+            b.gain(-bodyCheckPower * 0.08);
+          } else if (b.r > a.r + 1.5) {
+            b.gain(bodyCheckPower * 0.12);
+            a.gain(-bodyCheckPower * 0.08);
+          }
+        }
+      }
+    }
+  }
+
+  function updateArena(dt) {
+    const elapsed = performance.now() * 0.001 - game.startTime;
+    if (elapsed > CONFIG.shrinkStart && game.arena.r > CONFIG.minArenaRadius) {
+      game.arena.r = Math.max(CONFIG.minArenaRadius, game.arena.r - CONFIG.shrinkPerSecond * dt);
+    }
+  }
+
+  function update(dt) {
+    if (game.over) return;
+
+    updateArena(dt);
+
+    if (game.pellets.length < CONFIG.pelletRespawnMin) {
+      while (game.pellets.length < CONFIG.pelletRespawnMax) spawnPellet();
+    }
+
+    const human = game.players[0];
+    if (human.alive) updateHumanInput(human);
+
+    for (let i = 1; i < game.players.length; i++) {
+      const bot = game.players[i];
+      if (bot.alive) bot.thinkAI(dt, game.players, game.pellets, game.arena);
+    }
+
+    for (const p of game.players) p.update(dt, game.players, game.pellets, game.arena);
+    resolvePlayerCollisions(game.players, dt);
+
+    game.particles = game.particles.filter(p => p.update(dt));
+
+    const alive = game.players.filter(p => p.alive);
+    if (alive.length <= 1) {
+      game.over = true;
+      game.winner = alive[0] || null;
+      overlay.style.display = 'block';
+      if (!game.winner) {
+        overlayTitle.textContent = 'Draw';
+        overlayText.textContent = 'Everyone fell. Press restart and try again.';
+      } else if (game.winner.isHuman) {
+        overlayTitle.textContent = 'You Win';
+        overlayText.textContent = 'You out-rolled the bots. Press restart for another round.';
+      } else {
+        overlayTitle.textContent = game.winner.name + ' Wins';
+        overlayText.textContent = 'The AI beat you this round. Press restart and run it back.';
+      }
+    }
+  }
+
+  function drawBackground() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#194f88');
+    bg.addColorStop(1, '#0b1730');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    for (let i = 0; i < 80; i++) {
+      const x = (i * 193.31) % W;
+      const y = (i * 97.73 + performance.now() * 0.02) % H;
+      ctx.globalAlpha = 0.35 + ((i * 17) % 20) / 100;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(x, y, (i % 3) + 1, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function updateCamera(dt) {
+    const human = game.players[0];
+    const alivePlayers = game.players.filter(p => p.alive);
+    let targetX = 0;
+    let targetY = 0;
+    let spread = game.arena.r * 0.9;
+
+    if (human && human.alive) {
+      targetX = human.x;
+      targetY = human.y;
+    } else if (alivePlayers.length) {
+      for (const p of alivePlayers) {
+        targetX += p.x;
+        targetY += p.y;
+      }
+      targetX /= alivePlayers.length;
+      targetY /= alivePlayers.length;
+    }
+
+    let far = 0;
+    for (const p of alivePlayers) {
+      far = Math.max(far, Math.hypot(p.x - targetX, p.y - targetY) + p.r);
+    }
+    spread = Math.max(spread, far * 1.8);
+    const zoomTarget = clamp(Math.min(W, H) / (spread * 2), 0.55, 1.18);
+    game.camera.x = lerp(game.camera.x, targetX, clamp(dt * 4, 0, 1));
+    game.camera.y = lerp(game.camera.y, targetY, clamp(dt * 4, 0, 1));
+    game.camera.zoom = lerp(game.camera.zoom, zoomTarget, clamp(dt * 2.6, 0, 1));
+  }
+
+  function setWorldTransform() {
+    ctx.setTransform(
+      game.camera.zoom, 0, 0, game.camera.zoom,
+      W / 2 - game.camera.x * game.camera.zoom,
+      H / 2 - game.camera.y * game.camera.zoom
+    );
+  }
+
+  function drawArena() {
+    const arena = game.arena;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.26)';
+    ctx.beginPath();
+    ctx.ellipse(0, arena.r * 0.18, arena.r * 1.02, arena.r * 0.85, 0, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+
+    const grad = ctx.createRadialGradient(-arena.r * 0.22, -arena.r * 0.28, arena.r * 0.1, 0, 0, arena.r * 1.05);
+    grad.addColorStop(0, '#ddf8ff');
+    grad.addColorStop(0.6, '#b5ebff');
+    grad.addColorStop(1, '#86d5ff');
+    ctx.fillStyle = grad;
+
+    ctx.beginPath();
+    for (let i = 0; i < game.arena.wobble.length; i++) {
+      const t = (i / game.arena.wobble.length) * TAU;
+      const rr = arena.r + game.arena.wobble[i] + Math.sin(performance.now() * 0.0008 + i * 0.7) * 4;
+      const x = Math.cos(t) * rr;
+      const y = Math.sin(t) * rr;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.46)';
+    ctx.lineWidth = 9;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(0, arena.r - CONFIG.edgeWarningBand), 0, TAU);
+    ctx.strokeStyle = 'rgba(255,120,120,0.18)';
+    ctx.lineWidth = 22;
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.09)';
+    ctx.lineWidth = 2;
+    for (let r = 120; r < arena.r; r += 110) {
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, TAU);
+      ctx.stroke();
+    }
+  }
+
+  function drawWorld(dt) {
+    drawBackground();
+    updateCamera(dt);
+    setWorldTransform();
+
+    drawArena();
+
+    for (const p of game.pellets) p.draw();
+    for (const particle of game.particles) particle.draw();
+
+    const drawOrder = [...game.players].sort((a, b) => a.r - b.r);
+    for (const p of drawOrder) p.drawBody();
+    for (const p of drawOrder) p.drawLabel();
+  }
+
+  function drawHUD() {
+    const human = game.players[0];
+    const alive = game.players.filter(p => p.alive).length;
+    const ranked = [...game.players].sort((a, b) => (b.alive - a.alive) || (b.r - a.r));
+    const place = Math.max(1, ranked.findIndex(p => p === human) + 1);
+    const elapsed = performance.now() * 0.001 - game.startTime;
+    const boost = human ? Math.round(human.boostEnergy) : 0;
+
+    hud.innerHTML = `
+      <div class="title">Snowball Cliff Arena</div>
+      <div class="row"><strong>Controls:</strong> WASD / Arrows to move, Space to boost</div>
+      <div class="row"><strong>Alive:</strong> ${alive} &nbsp; <strong>Place:</strong> ${place}/${game.players.length}</div>
+      <div class="row"><strong>Size:</strong> ${human ? human.r.toFixed(1) : '0'} &nbsp; <strong>Boost:</strong> ${boost}</div>
+      <div class="row"><strong>Arena:</strong> ${Math.round(game.arena.r)} &nbsp; <strong>Time:</strong> ${elapsed.toFixed(1)}s</div>
+      <div class="row small">AI priorities: stay safe near edges, farm when weak, chase when favored, burst to finish edge knockouts.</div>
+    `;
+  }
+
+  function loop(now) {
+    const dt = Math.min(0.033, (now - game.lastTime) / 1000 || 0.016);
+    game.lastTime = now;
+    update(dt);
+    drawWorld(dt);
+    drawHUD();
+    requestAnimationFrame(loop);
+  }
+
+  reset();
+  overlay.style.display = 'block';
+  overlayTitle.textContent = 'Snowball Cliff Arena';
+  overlayText.textContent = 'Roll to collect snow, grow bigger, then push everyone off the cliff. The bots adapt and are meant to be tough.';
+  requestAnimationFrame((t) => {
+    game.lastTime = t;
+    requestAnimationFrame(loop);
+  });
+})();
+</script>
+</body>
+</html>

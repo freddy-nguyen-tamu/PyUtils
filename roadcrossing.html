@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Road Loot Runner AI Tournament</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #09090b;
+      color: #f4f4f5;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      justify-content: center;
+      padding: 18px;
+    }
+    .wrap {
+      width: min(1220px, 100%);
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 16px;
+    }
+    @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } }
+    .panel {
+      background: #18181b;
+      border: 1px solid #27272a;
+      border-radius: 18px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, .35);
+      padding: 16px;
+    }
+    h1, h2 { margin: 0; }
+    h1 { font-size: 26px; }
+    h2 { font-size: 18px; margin-bottom: 10px; }
+    p { color: #a1a1aa; line-height: 1.45; }
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    button {
+      appearance: none;
+      border: 1px solid #3f3f46;
+      background: #27272a;
+      color: #fafafa;
+      padding: 10px 12px;
+      border-radius: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: #3f3f46; }
+    button.primary { background: #7c3aed; border-color: #8b5cf6; }
+    button.danger { background: #dc2626; border-color: #ef4444; }
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: #052e16;
+      border: 1px solid #27272a;
+      border-radius: 18px;
+    }
+    .status {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: #09090b;
+      border: 1px solid #27272a;
+      color: #d4d4d8;
+    }
+    .side { display: flex; flex-direction: column; gap: 16px; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .stat { background: #09090b; border: 1px solid #27272a; border-radius: 14px; padding: 12px; }
+    .label { color: #71717a; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    .value { font-size: 20px; font-weight: 800; margin-top: 2px; }
+    .small { font-size: 14px; color: #d4d4d8; }
+    .legend { display: grid; gap: 8px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 9px;
+      border-radius: 999px;
+      background: #09090b;
+      border: 1px solid #27272a;
+      width: fit-content;
+      color: #d4d4d8;
+      font-size: 14px;
+    }
+    .dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; }
+    .ranking { display: grid; gap: 7px; margin-top: 10px; }
+    .rankRow {
+      display: grid;
+      grid-template-columns: 18px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      background: #09090b;
+      border: 1px solid #27272a;
+      border-radius: 12px;
+      padding: 7px 9px;
+      font-size: 13px;
+      color: #d4d4d8;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="panel">
+      <div class="top">
+        <div>
+          <h1>Road Loot Runner AI Tournament</h1>
+          <p style="margin: 4px 0 0">Six AI players compete to collect cash/gold and bank it through slower four-lane traffic.</p>
+        </div>
+        <div>
+          <button id="aiBtn" class="primary">AI Tournament</button>
+          <button id="pauseBtn">Pause</button>
+          <button id="resetBtn" class="danger">Reset</button>
+        </div>
+      </div>
+      <canvas id="game" width="900" height="620"></canvas>
+      <div class="status"><strong>Status:</strong> <span id="status">Six AIs are competing. Heavy traffic is active.</span></div>
+    </section>
+
+    <aside class="side">
+      <section class="panel">
+        <h2>Scoreboard</h2>
+        <div class="stats">
+          <div class="stat"><div class="label">Leader Score</div><div class="value" id="score">$0</div></div>
+          <div class="stat"><div class="label">Leader</div><div class="value" id="mode">AI 1</div></div>
+          <div class="stat"><div class="label">AI 1 Held</div><div class="value" id="held">$0</div></div>
+          <div class="stat"><div class="label">AI 1 Stack</div><div class="value" id="stack">0/3</div></div>
+          <div class="stat"><div class="label">AI 1 Speed</div><div class="value" id="speed">4.20</div></div>
+          <div class="stat"><div class="label">Total Trips</div><div class="value" id="trips">0</div></div>
+          <div class="stat"><div class="label">Total Crashes</div><div class="value" id="crashes">0</div></div>
+          <div class="stat"><div class="label">Total Lost</div><div class="value" id="lost">$0</div></div>
+        </div>
+        <div id="ranking" class="ranking"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Rules</h2>
+        <div class="legend">
+          <span class="pill"><span class="dot" style="background:#22c55e"></span> Cash = $10, weight 1</span>
+          <span class="pill"><span class="dot" style="background:#facc15"></span> Gold = $20, weight 2</span>
+          <span class="pill"><span class="dot" style="background:#ef4444"></span> All 4 lanes active, no overlap</span>
+        </div>
+        <p class="small">The more each AI carries, the slower it moves. Gold is worth twice cash but has twice the speed penalty.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Controls + AI</h2>
+        <p class="small">Tournament mode: all 6 AIs compete automatically.</p>
+        <p class="small">Click the tournament button to manually control AI 1 with WASD/arrow keys while the others keep competing.</p>
+        <p class="small">Each AI now uses a lightweight Q-learning controller. They learn from crashes, banking, pickups, risk reduction, lateral dodges, and progress. They are also rewarded for moving left/right to line up with goals and slide into safe gaps.</p>
+      </section>
+    </aside>
+  </main>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    const W = 900;
+    const H = 620;
+    const HOME_Y = 548;
+    const FAR_Y = 58;
+    const ROAD_TOP = 120;
+    const ROAD_BOTTOM = 500;
+    const LANES = [170, 250, 330, 410];
+    const PLAYER_R = 15;
+    const MAX_STACK = 3;
+    const CASH_VALUE = 10;
+    const GOLD_VALUE = 20;
+    const BASE_SPEED = 4.2;
+    const AI_COUNT = 6;
+    const AI_COLORS = ['#f97316', '#a78bfa', '#22d3ee', '#fb7185', '#84cc16', '#facc15'];
+    const AI_TYPES = [
+      { name: 'Q-Scout', epsilon: 0.08, alpha: 0.18, gamma: 0.86, greed: 0.95 },
+      { name: 'Q-Turtle', epsilon: 0.04, alpha: 0.14, gamma: 0.90, greed: 0.70 },
+      { name: 'Q-Sprinter', epsilon: 0.12, alpha: 0.22, gamma: 0.82, greed: 1.25 },
+      { name: 'Q-Backtracker', epsilon: 0.07, alpha: 0.19, gamma: 0.88, greed: 0.85 },
+      { name: 'Q-Weaver', epsilon: 0.10, alpha: 0.20, gamma: 0.86, greed: 1.00 },
+      { name: 'Q-Banker', epsilon: 0.05, alpha: 0.16, gamma: 0.91, greed: 0.65 },
+    ];
+    const ACTIONS = [
+      { name: 'wait', dx: 0, dy: 0 },
+      { name: 'up', dx: 0, dy: -1 },
+      { name: 'down', dx: 0, dy: 1 },
+      { name: 'left', dx: -1, dy: 0 },
+      { name: 'right', dx: 1, dy: 0 },
+      { name: 'upLeft', dx: -0.7, dy: -0.7 },
+      { name: 'upRight', dx: 0.7, dy: -0.7 },
+      { name: 'downLeft', dx: -0.7, dy: 0.7 },
+      { name: 'downRight', dx: 0.7, dy: 0.7 },
+      { name: 'hardLeft', dx: -1, dy: -0.2 },
+      { name: 'hardRight', dx: 1, dy: -0.2 },
+      { name: 'retreatLeft', dx: -1, dy: 0.25 },
+      { name: 'retreatRight', dx: 1, dy: 0.25 },
+    ];
+    const qTable = new Map();
+
+    const els = {
+      aiBtn: document.getElementById('aiBtn'),
+      pauseBtn: document.getElementById('pauseBtn'),
+      resetBtn: document.getElementById('resetBtn'),
+      status: document.getElementById('status'),
+      score: document.getElementById('score'),
+      held: document.getElementById('held'),
+      stack: document.getElementById('stack'),
+      speed: document.getElementById('speed'),
+      trips: document.getElementById('trips'),
+      crashes: document.getElementById('crashes'),
+      lost: document.getElementById('lost'),
+      mode: document.getElementById('mode'),
+      ranking: document.getElementById('ranking'),
+    };
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+    function newLoot(id) {
+      const type = Math.random() < 0.5 ? 'cash' : 'gold';
+      return {
+        id,
+        type,
+        x: rand(70, W - 70),
+        y: rand(34, 96),
+        value: type === 'gold' ? GOLD_VALUE : CASH_VALUE,
+        weight: type === 'gold' ? 2 : 1,
+      };
+    }
+
+    function newCar(id, forcedLane = null) {
+      const lane = forcedLane == null ? LANES[Math.floor(Math.random() * LANES.length)] : forcedLane;
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      const width = rand(58, 104);
+      const burst = Math.random() < 0.12 ? 1.25 : 1;
+      const speed = rand(1.25, 2.75) * burst;
+      return {
+        id,
+        x: dir === 1 ? -width - 25 : W + width + 25,
+        y: lane,
+        w: width,
+        h: 30,
+        dir,
+        speed,
+      };
+    }
+
+    function canSpawnCar(lane, dir, width = 104) {
+      const spawnX = dir === 1 ? -width - 25 : W + width + 25;
+      const minGap = 170;
+      return !state.cars.some(car => {
+        if (car.y !== lane || car.dir !== dir) return false;
+        return Math.abs(car.x - spawnX) < minGap + car.w / 2 + width / 2;
+      });
+    }
+
+    function spawnCarSafely(forcedLane = null) {
+      const laneOrder = forcedLane == null
+        ? [...LANES].sort(() => Math.random() - 0.5)
+        : [forcedLane, ...LANES.filter(l => l !== forcedLane).sort(() => Math.random() - 0.5)];
+
+      for (const lane of laneOrder) {
+        const dirs = Math.random() < 0.5 ? [1, -1] : [-1, 1];
+        for (const dir of dirs) {
+          const width = rand(58, 104);
+          if (canSpawnCar(lane, dir, width)) {
+            const car = newCar(state.nextCarId++, lane);
+            car.dir = dir;
+            car.w = width;
+            car.x = dir === 1 ? -width - 25 : W + width + 25;
+            state.cars.push(car);
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    function newPlayer(id) {
+      return {
+        id,
+        name: `AI ${id}`,
+        brain: AI_TYPES[(id - 1) % AI_TYPES.length],
+        lastStateKey: null,
+        lastActionIndex: null,
+        lastGoalDistance: 0,
+        lastRisk: 0,
+        x: W / 2 + (id - (AI_COUNT + 1) / 2) * 30,
+        y: HOME_Y,
+        bag: [],
+        score: 0,
+        trips: 0,
+        crashes: 0,
+        lostValue: 0,
+        color: AI_COLORS[(id - 1) % AI_COLORS.length],
+      };
+    }
+
+    function initialState() {
+      return {
+        players: Array.from({ length: AI_COUNT }, (_, i) => newPlayer(i + 1)),
+        loot: Array.from({ length: 12 }, (_, i) => newLoot(i + 1)),
+        cars: [],
+        status: 'Six AIs are competing. Heavy traffic is active.',
+        nextLootId: 13,
+        nextCarId: 1,
+        manualPlayerOne: false,
+        paused: false,
+        spawnTimer: 0,
+      };
+    }
+
+    let state = initialState();
+    const keys = Object.create(null);
+
+    function bagWeight(bag) {
+      return bag.reduce((s, item) => s + (item.type === 'gold' ? 2 : 1), 0);
+    }
+
+    function bagValue(bag) {
+      return bag.reduce((s, item) => s + (item.type === 'gold' ? GOLD_VALUE : CASH_VALUE), 0);
+    }
+
+    function playerSpeed(bag) {
+      return BASE_SPEED / (1 + 0.18 * bagWeight(bag));
+    }
+
+    function rectCircleHit(rect, circle) {
+      const cx = clamp(circle.x, rect.x - rect.w / 2, rect.x + rect.w / 2);
+      const cy = clamp(circle.y, rect.y - rect.h / 2, rect.y + rect.h / 2);
+      return (circle.x - cx) ** 2 + (circle.y - cy) ** 2 <= PLAYER_R ** 2;
+    }
+
+    function dangerAt(pos, cars, horizon = 30) {
+      let risk = 0;
+      for (const car of cars) {
+        for (let t = 0; t <= horizon; t += 5) {
+          const futureX = car.x + car.dir * car.speed * t;
+          const laneGap = Math.abs(pos.y - car.y);
+          const xGap = Math.abs(pos.x - futureX) - car.w / 2;
+          if (laneGap < 34 && xGap < 55) risk += (35 - laneGap) * (60 - xGap) * 0.0024;
+        }
+      }
+      return risk;
+    }
+
+    function nearestThreatVector(pos, cars) {
+      let best = null;
+      for (const car of cars) {
+        for (let t = 0; t <= 42; t += 6) {
+          const futureX = car.x + car.dir * car.speed * t;
+          const dx = pos.x - futureX;
+          const dy = pos.y - car.y;
+          const laneGap = Math.abs(dy);
+          const xGap = Math.abs(dx) - car.w / 2;
+          const danger = laneGap < 48 && xGap < 85 ? (48 - laneGap) + (85 - xGap) : 0;
+          if (danger > 0 && (!best || danger > best.danger)) {
+            best = { dx, dy, danger, car };
+          }
+        }
+      }
+      return best;
+    }
+
+    function safeSpotNear(p, cars) {
+      // Finds a nearby position that is safer, even if it means moving away from the current goal.
+      const spots = [];
+      for (let ring = 1; ring <= 4; ring++) {
+        const step = ring * 34;
+        spots.push(
+          { x: p.x, y: p.y + step },
+          { x: p.x, y: p.y - step },
+          { x: p.x - step, y: p.y },
+          { x: p.x + step, y: p.y },
+          { x: p.x - step * 0.75, y: p.y + step * 0.75 },
+          { x: p.x + step * 0.75, y: p.y + step * 0.75 },
+          { x: p.x - step * 0.75, y: p.y - step * 0.75 },
+          { x: p.x + step * 0.75, y: p.y - step * 0.75 }
+        );
+      }
+      let best = { x: p.x, y: p.y, risk: dangerAt(p, cars, 42) };
+      for (const spot of spots) {
+        const candidate = {
+          x: clamp(spot.x, PLAYER_R, W - PLAYER_R),
+          y: clamp(spot.y, FAR_Y - 5, HOME_Y + 5),
+        };
+        const risk = dangerAt(candidate, cars, 48);
+        const distancePenalty = Math.hypot(candidate.x - p.x, candidate.y - p.y) * 0.004;
+        const homeEdgeBonus = candidate.y < ROAD_TOP || candidate.y > ROAD_BOTTOM ? -0.35 : 0;
+        const score = risk + distancePenalty + homeEdgeBonus;
+        const bestScore = best.risk + Math.hypot(best.x - p.x, best.y - p.y) * 0.004;
+        if (score < bestScore) best = { ...candidate, risk };
+      }
+      return best;
+    }
+
+    function chooseGoal(s, p) {
+      const full = p.bag.length >= MAX_STACK;
+      const carriedValue = bagValue(p.bag);
+      const brain = p.brain;
+
+      if (p.bag.length > 0 && (full || carriedValue >= 20 + 15 * brain.greed || dangerAt(p, s.cars, 20) > 1.45)) {
+        return { x: W / 2, y: HOME_Y, kind: 'bank' };
+      }
+
+      if (!full && s.loot.length) {
+        let best = null;
+        for (const l of s.loot) {
+          const d = dist(p, l);
+          const localRisk = dangerAt(l, s.cars, 22);
+          const crowdPenalty = s.players.filter(other => other.id !== p.id && dist(other, l) < 80).length * 35;
+          const score = (l.value * brain.greed) / (d + 70 + localRisk * 160 + l.weight * 18 + crowdPenalty);
+          if (!best || score > best.score) best = { x: l.x, y: l.y, kind: 'loot', score };
+        }
+        return best || { x: W / 2, y: FAR_Y, kind: 'far' };
+      }
+
+      return { x: W / 2, y: HOME_Y, kind: 'bank' };
+    }
+
+    function qKey(s, p, goal) {
+      const risk = dangerAt(p, s.cars, 42);
+      const load = bagWeight(p.bag);
+      const carryBucket = p.bag.length === 0 ? 'empty' : p.bag.length >= 3 ? 'full' : `load${p.bag.length}`;
+      const zone = p.y < ROAD_TOP ? 'lootSide' : p.y > ROAD_BOTTOM ? 'homeSide' : `lane${clamp(Math.floor((p.y - ROAD_TOP) / ((ROAD_BOTTOM - ROAD_TOP) / LANES.length)), 0, LANES.length - 1)}`;
+      const riskBucket = risk < 0.35 ? 'safe' : risk < 1.0 ? 'risky' : 'danger';
+      const goalDirY = goal.y < p.y - 12 ? 'up' : goal.y > p.y + 12 ? 'down' : 'sameY';
+      const goalDirX = goal.x < p.x - 28 ? 'left' : goal.x > p.x + 28 ? 'right' : 'sameX';
+      const nearest = nearestThreatVector(p, s.cars);
+      const threatDir = !nearest ? 'none' : Math.abs(nearest.dx) > Math.abs(nearest.dy) ? (nearest.dx > 0 ? 'threatLeft' : 'threatRight') : 'threatLane';
+      return `${p.brain.name}|${zone}|${carryBucket}|w${load}|${riskBucket}|${goalDirY}|${goalDirX}|${threatDir}`;
+    }
+
+    function qGet(key, actionIndex) {
+      const fullKey = `${key}|${actionIndex}`;
+      return qTable.has(fullKey) ? qTable.get(fullKey) : 0;
+    }
+
+    function qSet(key, actionIndex, value) {
+      qTable.set(`${key}|${actionIndex}`, value);
+    }
+
+    function maxQ(key) {
+      let best = -Infinity;
+      for (let i = 0; i < ACTIONS.length; i++) best = Math.max(best, qGet(key, i));
+      return best === -Infinity ? 0 : best;
+    }
+
+    function heuristicActionValue(s, p, action, goal) {
+      const speed = playerSpeed(p.bag);
+      const len = Math.hypot(action.dx, action.dy) || 1;
+      const nx = clamp(p.x + (action.dx / len) * speed, PLAYER_R, W - PLAYER_R);
+      const ny = clamp(p.y + (action.dy / len) * speed, FAR_Y - 5, HOME_Y + 5);
+      const next = { x: nx, y: ny };
+      const risk = dangerAt(next, s.cars, 54);
+      const currentRisk = dangerAt(p, s.cars, 42);
+      const currentGoalDistance = Math.hypot(goal.x - p.x, goal.y - p.y);
+      const nextGoalDistance = Math.hypot(goal.x - nx, goal.y - ny);
+      const progress = currentGoalDistance - nextGoalDistance;
+      const safeEdgeBonus = (ny < ROAD_TOP || ny > ROAD_BOTTOM) ? 0.22 : 0;
+      const waitBonus = action.name === 'wait' && currentRisk > 0.55 ? 0.65 : 0;
+      const threat = nearestThreatVector(p, s.cars);
+      let escapeBonus = 0;
+      if (threat) {
+        escapeBonus = ((action.dx * threat.dx + action.dy * threat.dy) / (Math.hypot(threat.dx, threat.dy) || 1)) * 0.35;
+      }
+
+      // Encourage horizontal setup: first align with the loot/bank opening, then cross.
+      const xGapNow = Math.abs(goal.x - p.x);
+      const xGapNext = Math.abs(goal.x - nx);
+      const xAlignmentGain = xGapNow - xGapNext;
+      const verticalGap = Math.abs(goal.y - p.y);
+      const shouldLineUp = xGapNow > 35 && verticalGap > 70;
+      const lateralSetupBonus = shouldLineUp ? xAlignmentGain * 0.18 : xAlignmentGain * 0.06;
+
+      // Reward side-to-side moves when they make the next position safer.
+      const riskDrop = currentRisk - risk;
+      const lateralRiskBonus = Math.abs(action.dx) * Math.max(0, riskDrop) * 1.6;
+
+      // When a car is nearby, prefer sliding out of its future path over waiting forever.
+      const trafficDodgeBonus = Math.abs(action.dx) * Math.max(0, currentRisk - 0.25) * 0.42;
+
+      // Penalize vertical charging while badly misaligned horizontally.
+      const verticalRushPenalty = Math.abs(action.dy) > Math.abs(action.dx) && xGapNow > 85 && verticalGap > 90 ? 0.55 : 0;
+
+      return progress * 0.62
+        - risk * 2.55
+        + safeEdgeBonus
+        + waitBonus
+        + escapeBonus
+        + lateralSetupBonus
+        + lateralRiskBonus
+        + trafficDodgeBonus
+        - verticalRushPenalty;
+    }
+
+    function bestAiMove(s, p) {
+      const goal = chooseGoal(s, p);
+      const key = qKey(s, p, goal);
+      const brain = p.brain;
+      const explore = Math.random() < brain.epsilon;
+      let bestIndex = 0;
+      let bestScore = -Infinity;
+
+      if (explore) {
+        const sampled = ACTIONS
+          .map((a, i) => ({ i, score: heuristicActionValue(s, p, a, goal) }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 5);
+        bestIndex = sampled[Math.floor(Math.random() * sampled.length)].i;
+      } else {
+        for (let i = 0; i < ACTIONS.length; i++) {
+          const q = qGet(key, i);
+          const h = heuristicActionValue(s, p, ACTIONS[i], goal);
+          const score = q + h;
+          if (score > bestScore) {
+            bestScore = score;
+            bestIndex = i;
+          }
+        }
+      }
+
+      p.lastStateKey = key;
+      p.lastActionIndex = bestIndex;
+      p.lastGoalDistance = Math.hypot(goal.x - p.x, goal.y - p.y);
+      p.lastRisk = dangerAt(p, s.cars, 42);
+      return ACTIONS[bestIndex];
+    }
+
+    function learnFromOutcome(s, p, eventReward = 0) {
+      if (p.lastStateKey == null || p.lastActionIndex == null) return;
+      const goal = chooseGoal(s, p);
+      const nextKey = qKey(s, p, goal);
+      const newGoalDistance = Math.hypot(goal.x - p.x, goal.y - p.y);
+      const newRisk = dangerAt(p, s.cars, 42);
+      const progressReward = (p.lastGoalDistance - newGoalDistance) * 0.09;
+      const safetyReward = (p.lastRisk - newRisk) * 0.65;
+      const roadSurvivalReward = (p.y > ROAD_TOP && p.y < ROAD_BOTTOM) ? 0.015 : 0.035;
+      const lateralLearningReward = Math.abs((ACTIONS[p.lastActionIndex] || { dx: 0 }).dx) > 0
+        ? Math.max(0, p.lastRisk - newRisk) * 0.45 + 0.015
+        : 0;
+      const reward = eventReward + progressReward + safetyReward + roadSurvivalReward + lateralLearningReward - newRisk * 0.025;
+      const oldQ = qGet(p.lastStateKey, p.lastActionIndex);
+      const updated = oldQ + p.brain.alpha * (reward + p.brain.gamma * maxQ(nextKey) - oldQ);
+      qSet(p.lastStateKey, p.lastActionIndex, clamp(updated, -50, 80));
+    }
+
+    function update(dt) {
+      if (state.paused) return;
+
+      state.spawnTimer += dt;
+      const leaderScore = Math.max(...state.players.map(p => p.score));
+      // Keep every row active, but prevent cars from overlapping at spawn.
+      for (const lane of LANES) {
+        const laneCars = state.cars.filter(c => c.y === lane);
+        if (laneCars.length < 2) spawnCarSafely(lane);
+      }
+
+      const spawnEvery = Math.max(330, 610 - leaderScore * 0.22);
+      while (state.spawnTimer > spawnEvery) {
+        state.spawnTimer -= spawnEvery;
+        spawnCarSafely();
+        if (Math.random() < 0.20) spawnCarSafely();
+      }
+
+      for (const car of state.cars) car.x += car.dir * car.speed;
+      state.cars = state.cars.filter(c => c.x > -190 && c.x < W + 190);
+
+      for (const p of state.players) {
+        let dx = 0;
+        let dy = 0;
+
+        if (p.id === 1 && state.manualPlayerOne) {
+          if (keys.arrowleft || keys.a) dx -= 1;
+          if (keys.arrowright || keys.d) dx += 1;
+          if (keys.arrowup || keys.w) dy -= 1;
+          if (keys.arrowdown || keys.s) dy += 1;
+        } else {
+          const move = bestAiMove(state, p);
+          dx = move.dx;
+          dy = move.dy;
+        }
+
+        const len = Math.hypot(dx, dy);
+        const speed = playerSpeed(p.bag);
+        if (len > 0) {
+          p.x = clamp(p.x + (dx / len) * speed, PLAYER_R, W - PLAYER_R);
+          p.y = clamp(p.y + (dy / len) * speed, FAR_Y - 5, HOME_Y + 5);
+        }
+
+        let eventReward = 0;
+        const hit = state.cars.some(car => rectCircleHit(car, p));
+        if (hit) {
+          const lost = bagValue(p.bag);
+          eventReward -= 18 + lost * 0.9;
+          learnFromOutcome(state, p, eventReward);
+          p.x = W / 2 + (p.id - (AI_COUNT + 1) / 2) * 30;
+          p.y = HOME_Y;
+          p.bag = [];
+          p.crashes += 1;
+          p.lostValue += lost;
+          state.status = lost > 0 ? `${p.name} got hit and dropped $${lost}.` : `${p.name} got hit and respawned.`;
+          continue;
+        }
+
+        if (p.bag.length < MAX_STACK) {
+          const idx = state.loot.findIndex(l => dist(p, l) < 30);
+          if (idx >= 0) {
+            const picked = state.loot[idx];
+            p.bag.push(picked);
+            eventReward += picked.type === 'gold' ? 5.2 : 2.8;
+            state.loot.splice(idx, 1);
+            state.loot.push(newLoot(state.nextLootId++));
+            state.status = `${p.name} picked up ${picked.type}. Stack: ${p.bag.length}/${MAX_STACK}.`;
+          }
+        }
+
+        if (p.y > ROAD_BOTTOM + 28 && p.bag.length > 0) {
+          const earned = bagValue(p.bag);
+          p.score += earned;
+          eventReward += 15 + earned * 0.55;
+          p.trips += 1;
+          state.status = `${p.name} banked $${earned}!`;
+          p.bag = [];
+        }
+
+        learnFromOutcome(state, p, eventReward);
+      }
+    }
+
+    function drawRoundedRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, r);
+      ctx.fill();
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = '#064e3b';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#14532d';
+      ctx.fillRect(0, 0, W, 115);
+      ctx.fillRect(0, 505, W, 115);
+      ctx.fillStyle = '#18181b';
+      ctx.fillRect(0, ROAD_TOP, W, ROAD_BOTTOM - ROAD_TOP);
+
+      ctx.fillStyle = '#bbf7d0';
+      ctx.font = '700 18px system-ui';
+      ctx.textAlign = 'left';
+      ctx.fillText('LOOT SIDE', 24, 36);
+      ctx.fillText('HOME / BANK', 24, 588);
+
+      ctx.fillStyle = 'rgba(244,244,245,.45)';
+      for (const y of LANES.map(v => v + 21)) {
+        for (let i = 0; i < 12; i++) {
+          ctx.beginPath();
+          ctx.roundRect(i * 86 + 16, y, 48, 4, 2);
+          ctx.fill();
+        }
+      }
+
+      for (const l of state.loot) {
+        ctx.beginPath();
+        ctx.arc(l.x, l.y, 17, 0, Math.PI * 2);
+        ctx.fillStyle = l.type === 'gold' ? '#facc15' : '#22c55e';
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#052e16';
+        ctx.stroke();
+        ctx.fillStyle = l.type === 'gold' ? '#422006' : '#052e16';
+        ctx.font = '900 16px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText(l.type === 'gold' ? 'G' : '$', l.x, l.y + 6);
+      }
+
+      for (const car of state.cars) {
+        ctx.save();
+        ctx.translate(car.x, car.y);
+        ctx.fillStyle = car.dir === 1 ? '#ef4444' : '#3b82f6';
+        drawRoundedRect(-car.w / 2, -car.h / 2, car.w, car.h, 8);
+        ctx.fillStyle = 'rgba(186,230,253,.9)';
+        drawRoundedRect(-car.w / 2 + 9, -8, 20, 16, 4);
+        drawRoundedRect(car.w / 2 - 30, -8, 20, 16, 4);
+        ctx.fillStyle = '#020617';
+        ctx.beginPath(); ctx.arc(-car.w / 2 + 16, 16, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(car.w / 2 - 16, 16, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+
+      for (const p of state.players) {
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.beginPath();
+        ctx.arc(0, 0, PLAYER_R + 5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,.14)';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(0, 0, PLAYER_R, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.fill();
+        ctx.lineWidth = p.id === 1 && state.manualPlayerOne ? 4 : 3;
+        ctx.strokeStyle = p.id === 1 && state.manualPlayerOne ? '#ffffff' : '#18181b';
+        ctx.stroke();
+        ctx.fillStyle = '#18181b';
+        ctx.font = '900 12px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText(String(p.id), 0, 4);
+        ctx.fillStyle = '#fafafa';
+        ctx.font = '800 11px system-ui';
+        ctx.strokeStyle = '#09090b';
+        ctx.lineWidth = 3;
+        ctx.strokeText(`$${p.score}`, 0, -25);
+        ctx.fillText(`$${p.score}`, 0, -25);
+        p.bag.forEach((item, i) => {
+          ctx.beginPath();
+          ctx.arc(12 + i * 10, -26 - i * 8, 8, 0, Math.PI * 2);
+          ctx.fillStyle = item.type === 'gold' ? '#facc15' : '#22c55e';
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#18181b';
+          ctx.stroke();
+        });
+        ctx.restore();
+      }
+    }
+
+    function renderUi() {
+      const sorted = [...state.players].sort((a, b) => b.score - a.score || a.crashes - b.crashes || b.trips - a.trips);
+      const leader = sorted[0];
+      const p1 = state.players[0];
+      els.status.textContent = state.status;
+      els.score.textContent = `$${leader.score}`;
+      els.held.textContent = `$${bagValue(p1.bag)}`;
+      els.stack.textContent = `${p1.bag.length}/${MAX_STACK}`;
+      els.speed.textContent = playerSpeed(p1.bag).toFixed(2);
+      els.trips.textContent = state.players.reduce((sum, p) => sum + p.trips, 0);
+      els.crashes.textContent = state.players.reduce((sum, p) => sum + p.crashes, 0);
+      els.lost.textContent = `$${state.players.reduce((sum, p) => sum + p.lostValue, 0)}`;
+      els.mode.textContent = leader.name;
+      els.aiBtn.textContent = state.manualPlayerOne ? 'Manual AI 1' : 'AI Tournament';
+      els.aiBtn.className = state.manualPlayerOne ? '' : 'primary';
+      els.pauseBtn.textContent = state.paused ? 'Resume' : 'Pause';
+      els.ranking.innerHTML = sorted.map((p, i) => `
+        <div class="rankRow">
+          <span style="width:12px;height:12px;border-radius:50%;background:${p.color};display:inline-block"></span>
+          <span>#${i + 1} ${p.name} ${p.brain.name} · stack ${p.bag.length}/3 · crashes ${p.crashes}</span>
+          <strong>$${p.score}</strong>
+        </div>
+      `).join('');
+    }
+
+    let last = performance.now();
+    function loop(now) {
+      const dt = Math.min(32, now - last);
+      last = now;
+      update(dt);
+      draw();
+      renderUi();
+      requestAnimationFrame(loop);
+    }
+
+    window.addEventListener('keydown', e => {
+      keys[e.key.toLowerCase()] = true;
+      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(e.key.toLowerCase())) e.preventDefault();
+    });
+    window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+    els.aiBtn.addEventListener('click', () => {
+      state.manualPlayerOne = !state.manualPlayerOne;
+      state.status = state.manualPlayerOne ? 'Manual control enabled for AI 1. Other AIs keep competing.' : 'AI tournament mode enabled for all players.';
+    });
+    els.pauseBtn.addEventListener('click', () => { state.paused = !state.paused; });
+    els.resetBtn.addEventListener('click', () => { state = initialState(); });
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
