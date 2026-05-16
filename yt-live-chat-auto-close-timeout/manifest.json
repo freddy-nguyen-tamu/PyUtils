@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Live Chat Auto Close Simple",
+  "version": "1.1.0",
+  "description": "Clicks YouTube's own live chat close button once, then stops looking after a short timeout.",
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

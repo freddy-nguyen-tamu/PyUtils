@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Anti Click Popup Tabs</title>
+  <style>
+    body {
+      min-width: 280px;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 14px;
+      background: #111;
+      color: #f5f5f5;
+    }
+    h1 {
+      font-size: 16px;
+      margin: 0 0 10px;
+    }
+    .host {
+      font-size: 12px;
+      opacity: .75;
+      overflow-wrap: anywhere;
+      margin-bottom: 12px;
+    }
+    label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 0;
+      border-top: 1px solid #333;
+      font-size: 14px;
+    }
+    input[type="checkbox"] {
+      transform: scale(1.15);
+    }
+    .note {
+      border-top: 1px solid #333;
+      padding-top: 10px;
+      font-size: 12px;
+      line-height: 1.4;
+      opacity: .8;
+    }
+    button {
+      width: 100%;
+      margin-top: 12px;
+      padding: 9px;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>Anti Click Popup Tabs</h1>
+  <div class="host" id="host">Loading...</div>
+
+  <label>
+    <span>Enable extension</span>
+    <input id="globalEnabled" type="checkbox">
+  </label>
+
+  <label>
+    <span>Protect this website</span>
+    <input id="siteEnabled" type="checkbox">
+  </label>
+
+  <label>
+    <span>Aggressive auto-close new tabs</span>
+    <input id="aggressiveMode" type="checkbox">
+  </label>
+
+  <label>
+    <span>Show tiny ON/OFF button</span>
+    <input id="showFloatingToggle" type="checkbox">
+  </label>
+
+  <button id="reload">Reload current tab</button>
+
+  <div class="note">
+    The tiny ON/OFF button appears at the bottom-right of each page.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

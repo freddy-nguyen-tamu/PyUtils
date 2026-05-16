@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Anti Click Popup Tabs",
+  "version": "1.1.0",
+  "description": "Blocks websites that open new tabs/popups when you click anywhere, with a tiny on-page toggle.",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content-main.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content-isolated.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "Anti Click Popup Tabs",
+    "default_popup": "popup.html"
+  }
+}

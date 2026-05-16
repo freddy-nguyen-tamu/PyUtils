@@ -24,7 +24,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
 
-REPLAY_PAGE = "https://www.nimo.tv/user/[]"
+REPLAY_PAGE = "https://www.nimo.tv/user/thaygiaoba?tabId=1"
 
 HISTORY_FILE = "history.json"
 CLIENT_SECRET_FILE = "client_secret.json"
@@ -332,11 +332,17 @@ def fetch_replay_entries(url):
 
         seen.add(vid)
 
+        title_el = a.select_one(".nimo-rc-video_meta__title")
+        date_el = a.select_one(".nimo-rc-video_meta__audience .text")
+
+        title = title_el.get_text(" ", strip=True) if title_el else "Replay"
+        date = date_el.get_text(" ", strip=True) if date_el else ""
+
         results.append({
             "video_id": vid,
             "url": href,
-            "title": a.text.strip() or "Replay",
-            "date": "",
+            "title": title,
+            "date": date,
         })
 
     return results
@@ -381,7 +387,8 @@ def main():
             if not out.exists():
                 run_downloader(e["url"], str(out))
 
-            result = upload_with_auto_split(youtube, out, e["title"])
+            yt_title = f"{e['date']} {e['title']}".strip()
+            result = upload_with_auto_split(youtube, out, yt_title)
 
             history["uploaded"][e["video_id"]] = {
                 "youtube_ids": result["youtube_ids"],

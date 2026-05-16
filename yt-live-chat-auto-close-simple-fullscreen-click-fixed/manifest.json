@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Live Chat Auto Close Simple",
+  "version": "1.2.0",
+  "description": "Only clicks YouTube's own live chat close button, including in fullscreen, then restores player focus/pointer state.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}
