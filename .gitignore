@@ -1,0 +1,93 @@
+# Dependencies
+node_modules/
+
+# Browser / Playwright / automation profiles
+nimo_profile/
+playwright_fb_profile/
+playwright_firefox_profile/
+playwright_ig_profile/
+pw_user_data/
+chrome-profile/
+mychrome/
+
+# Generated/downloaded media and output folders
+tower_of_god_images/
+translated_url_output/
+sec26cycle2_images/
+transcripts/
+downloads_cropped/
+gemini_comic_output/
+input_files/
+data/
+outputs/
+output/
+results/
+result/
+raw/
+temp/
+tmp/
+
+# Audio generated/test files
+*.aac
+noise.aac
+noise_negative.aac
+
+# PDFs / generated documents
+*.pdf
+sec26cycle2-paper2362.pdf
+
+# Text dumps and temporary output
+*.txt
+staged_diff.txt
+quanhieu output.txt
+reddit.txt
+all_files_contents_*.txt
+COMMIT_EDITMSG.generated.txt
+STAGED_DIFF.generated.patch
+
+# Windows/system junk
+desktop.ini
+Thumbs.db
+ehthumbs.db
+.DS_Store
+
+# Local executable/helper copy
+clip.exe
+
+# Accidental command/output files
+python
+h origin main*
+
+# Python caches / virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+virtualenv/
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+.secret_sanitizer_backup/
+
+# Logs
+*.log
+logs/
+log/
+
+# Weird/generated folders
+%(uploader)s/
+
+# Generated HTML files
+clean_output.html
+giaitri321_full_text.html
+input.html
+
+# Local clipboard helper / accidental output
+clip
+
+# Ignore wrong gitignore filename if it exists
+gitignore

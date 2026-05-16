@@ -26,7 +26,18 @@ for folder in (CHAR_DIR, MEMORY_DIR, HISTORY_DIR, TTS_DIR):
 
 CHAT_PROVIDER = os.getenv("CHAT_PROVIDER", "groq").strip().lower()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEYS = []
+
+base_groq_key = os.getenv("GROQ_API_KEY", "")
+if base_groq_key:
+    GROQ_API_KEYS.append(("GROQ_API_KEY", base_groq_key))
+
+for i in range(1, 10):
+    key_name = f"GROQ_API_KEY{i}"
+    key_value = os.getenv(key_name, "")
+    if key_value:
+        GROQ_API_KEYS.append((key_name, key_value))
+
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -243,6 +254,7 @@ def provider_settings():
             raise RuntimeError("OPENROUTER_API_KEY is missing.")
 
         return {
+            "provider": "openrouter",
             "url": OPENROUTER_API_URL,
             "model": OPENROUTER_MODEL,
             "headers": {
@@ -253,16 +265,23 @@ def provider_settings():
             },
         }
 
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is missing.")
+    if not GROQ_API_KEYS:
+        raise RuntimeError(
+            "No Groq API keys found. Set GROQ_API_KEY and optionally "
+            "GROQ_API_KEY1 through GROQ_API_KEY9."
+        )
 
     return {
+        "provider": "groq",
         "url": GROQ_API_URL,
         "model": GROQ_MODEL,
-        "headers": {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json",
-        },
+    }
+
+
+def make_groq_headers(api_key):
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
     }
 
 
@@ -302,41 +321,130 @@ def chat_completion(messages, temperature=0.85, max_tokens=600, json_mode=False,
 
     backoff = 1.0
 
+    # OpenRouter keeps the original single-key retry behavior.
+    if settings["provider"] == "openrouter":
+        for attempt in range(1, retries + 1):
+            try:
+                resp = requests.post(
+                    settings["url"],
+                    headers=settings["headers"],
+                    json=payload,
+                    timeout=90,
+                )
+            except requests.RequestException as e:
+                if attempt == retries:
+                    raise RuntimeError(f"Network error: {e}")
+
+                time.sleep(backoff)
+                backoff = min(backoff * 1.7, 20)
+                continue
+
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+
+            if resp.status_code == 429:
+                wait_s = max(parse_retry_after_seconds(resp), backoff)
+                time.sleep(wait_s)
+                backoff = min(backoff * 1.7, 30)
+                continue
+
+            if resp.status_code == 400 and json_mode:
+                payload.pop("response_format", None)
+                json_mode = False
+                continue
+
+            raise RuntimeError(f"API error {resp.status_code}: {resp.text}")
+
+        raise RuntimeError("Too many retries.")
+
+    # Groq tries every loaded key before any sleep happens.
     for attempt in range(1, retries + 1):
-        try:
-            resp = requests.post(
-                settings["url"],
-                headers=settings["headers"],
-                json=payload,
-                timeout=90,
+        rate_limit_waits = []
+        network_errors = []
+        api_errors = []
+        retry_without_json_mode = False
+
+        for key_name, api_key in GROQ_API_KEYS:
+            try:
+                resp = requests.post(
+                    settings["url"],
+                    headers=make_groq_headers(api_key),
+                    json=payload,
+                    timeout=90,
+                )
+            except requests.RequestException as e:
+                network_errors.append((key_name, str(e)))
+                print(
+                    f"[NET] {key_name} network error. "
+                    f"Trying next key before sleeping. "
+                    f"Attempt {attempt}/{retries}"
+                )
+                continue
+
+            if resp.status_code == 200:
+                if key_name != "GROQ_API_KEY":
+                    print(f"[OK] Groq request succeeded using {key_name}.")
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+
+            if resp.status_code == 429:
+                wait_s = max(parse_retry_after_seconds(resp), backoff)
+                rate_limit_waits.append(wait_s)
+                print(
+                    f"[429] {key_name} rate limited. "
+                    f"Trying next key before sleeping. "
+                    f"Attempt {attempt}/{retries}"
+                )
+                continue
+
+            if resp.status_code == 400 and json_mode:
+                retry_without_json_mode = True
+                api_errors.append((key_name, resp.status_code, resp.text))
+                print(
+                    f"[400] {key_name} failed with JSON mode. "
+                    "Trying next key before retrying without JSON mode."
+                )
+                continue
+
+            api_errors.append((key_name, resp.status_code, resp.text))
+            print(
+                f"[API] {key_name} failed with status {resp.status_code}. "
+                f"Trying next key before sleeping."
             )
-        except requests.RequestException as e:
-            if attempt == retries:
-                raise RuntimeError(f"Network error: {e}")
 
-            time.sleep(backoff)
-            backoff = min(backoff * 1.7, 20)
-            continue
-
-        if resp.status_code == 200:
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-
-        if resp.status_code == 429:
-            wait_s = max(parse_retry_after_seconds(resp), backoff)
-            time.sleep(wait_s)
-            backoff = min(backoff * 1.7, 30)
-            continue
-
-        if resp.status_code == 400 and json_mode:
+        if retry_without_json_mode and json_mode:
             payload.pop("response_format", None)
             json_mode = False
+            print("All Groq keys were tried. Retrying without JSON mode before sleeping.")
             continue
 
-        raise RuntimeError(f"API error {resp.status_code}: {resp.text}")
+        if attempt == retries:
+            if api_errors:
+                key_name, status_code, text = api_errors[-1]
+                raise RuntimeError(f"Groq API error using {key_name}: {status_code}: {text}")
 
-    raise RuntimeError("Too many retries.")
+            if network_errors:
+                key_name, error = network_errors[-1]
+                raise RuntimeError(f"Network error using {key_name}: {error}")
 
+            raise RuntimeError("Too many retries across all Groq API keys.")
+
+        if rate_limit_waits:
+            wait_s = max(rate_limit_waits)
+        else:
+            wait_s = backoff
+
+        print(
+            f"All {len(GROQ_API_KEYS)} loaded Groq API key(s) failed. "
+            f"Sleeping {wait_s:.2f}s, then retrying from GROQ_API_KEY. "
+            f"Attempt {attempt}/{retries}"
+        )
+
+        time.sleep(wait_s)
+        backoff = min(backoff * 1.7, 30)
+
+    raise RuntimeError("Too many retries across all Groq API keys.")
 
 def extract_json(text):
     text = str(text or "").strip()
