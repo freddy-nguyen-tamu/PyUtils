@@ -72,7 +72,19 @@ function signOut() {
 
 function getComics() {
   const saved = localStorage.getItem("comic_metadata");
-  return saved ? JSON.parse(saved) : SITE_CONFIG.comics;
+  try {
+    const comics = saved ? JSON.parse(saved) : SITE_CONFIG.comics;
+    if (!Array.isArray(comics)) throw new Error("metadata is not a list");
+    for (const comic of comics) {
+      if (!comic || !comic.id || !comic.title || !Array.isArray(comic.roots)) {
+        throw new Error("metadata has an invalid comic entry");
+      }
+    }
+    return comics;
+  } catch (err) {
+    localStorage.removeItem("comic_metadata");
+    return SITE_CONFIG.comics;
+  }
 }
 
 function saveComics(comics) {
@@ -82,6 +94,10 @@ function saveComics(comics) {
 function showComics() {
   const comics = getComics();
   app.innerHTML = "<h2>Comics</h2>";
+  if (!comics.length) {
+    app.innerHTML += '<p class="error">No comics are configured in config.js.</p>';
+    return;
+  }
   comics.forEach((comic) => {
     const div = document.createElement("div");
     div.className = "comic";
@@ -103,6 +119,10 @@ function findComic(id) {
 
 function showChapterList(comicId) {
   currentComic = findComic(comicId);
+  if (!currentComic) {
+    app.innerHTML = '<p class="error">Comic not found. Clear browser localStorage or reset metadata.</p>';
+    return;
+  }
   app.innerHTML = `<h2>${escapeHtml(currentComic.title)} chapters</h2>`;
   const back = document.createElement("button");
   back.textContent = "Back to comics";
@@ -135,7 +155,8 @@ async function readChapter(comicId, chapterNumber) {
     }
     renderChapter();
   } catch (err) {
-    app.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
+    const message = err && err.message ? err.message : String(err || "Unknown error");
+    app.innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
   }
 }
 
