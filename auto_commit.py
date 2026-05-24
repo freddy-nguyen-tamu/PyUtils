@@ -110,6 +110,8 @@ def run_cmd(args: list[str], *, check: bool = True) -> subprocess.CompletedProce
     return subprocess.run(
         args,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=check,
@@ -260,7 +262,10 @@ def groq_chat_try_all_keys(messages: list[dict[str, str]], *, max_tokens: int = 
             if resp.status_code in (408, 409, 500, 502, 503, 504):
                 wait_s = max(parse_retry_after_seconds(resp, backoff), backoff)
                 waits.append(wait_s)
-                last_error = f"{key_name} temporary API error {resp.status_code}: {resp.text[:500]}"
+                last_error = (
+                    f"{key_name} temporary API error "
+                    f"{resp.status_code}: {resp.text[:500]}"
+                )
                 print(f"[TEMP] {last_error}")
                 print("Trying next key before sleeping...")
                 continue
@@ -304,6 +309,8 @@ def copy_to_clipboard(text: str) -> bool:
                 cmd,
                 input=text,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=True,
@@ -317,13 +324,45 @@ def copy_to_clipboard(text: str) -> bool:
 
 def get_staged_diff() -> str:
     result = run_cmd(["git", "diff", "--cached"], check=True)
-    return result.stdout
+    return result.stdout or ""
 
 
 def validate_git_repo() -> None:
     result = run_cmd(["git", "rev-parse", "--is-inside-work-tree"], check=False)
     if result.returncode != 0 or result.stdout.strip() != "true":
         raise SystemExit("This folder is not inside a Git repository.")
+
+
+def get_git_root() -> Path:
+    result = run_cmd(["git", "rev-parse", "--show-toplevel"], check=True)
+    return Path(result.stdout.strip()).resolve()
+
+
+def get_self_git_path() -> str | None:
+    """Return this script's path relative to the repo root, if applicable."""
+    try:
+        script_path = Path(__file__).resolve()
+        git_root = get_git_root()
+        return script_path.relative_to(git_root).as_posix()
+    except ValueError:
+        # The script is being run from outside the current repository.
+        return None
+
+
+def unstage_self() -> None:
+    """Make sure this automation script is never part of the commit."""
+    self_git_path = get_self_git_path()
+    if not self_git_path:
+        return
+
+    result = run_cmd(
+        ["git", "diff", "--cached", "--name-only", "--", self_git_path],
+        check=True,
+    )
+
+    if result.stdout.strip():
+        print(f"Excluding this script from staged changes: {self_git_path}")
+        stream_cmd(["git", "reset", "--", self_git_path])
 
 
 def stage_changes(mode: str) -> None:
@@ -333,6 +372,8 @@ def stage_changes(mode: str) -> None:
         stream_cmd(["git", "add", "."])
     else:
         raise ValueError(f"Unknown stage mode: {mode}")
+
+    unstage_self()
 
 
 def split_large_text(text: str, max_chars: int) -> list[str]:
