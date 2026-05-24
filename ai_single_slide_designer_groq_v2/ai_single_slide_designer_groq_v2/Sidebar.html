@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --accent: #2563eb;
+      --line: #e2e8f0;
+      --danger: #b91c1c;
+    }
+
+    body {
+      margin: 0;
+      padding: 14px;
+      font-family: Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    h1 {
+      font-size: 18px;
+      margin: 0 0 6px;
+    }
+
+    h2 {
+      font-size: 13px;
+      margin: 16px 0 8px;
+    }
+
+    p {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+      margin: 0 0 12px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 700;
+      margin: 12px 0 6px;
+    }
+
+    textarea, select, input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 12px;
+      background: #fff;
+      color: var(--text);
+      outline: none;
+    }
+
+    textarea {
+      min-height: 150px;
+      resize: vertical;
+      line-height: 1.4;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+    }
+
+    button.secondary {
+      color: var(--text);
+      background: #e2e8f0;
+    }
+
+    button.ghost {
+      color: var(--accent);
+      background: transparent;
+      border: 1px solid var(--line);
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      margin-top: 12px;
+    }
+
+    .status {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.4;
+      background: #eff6ff;
+      color: #1e3a8a;
+      display: none;
+      white-space: pre-wrap;
+    }
+
+    .status.error {
+      background: #fef2f2;
+      color: var(--danger);
+    }
+
+    .tiny {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .checkbox {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      margin: 10px 0 0;
+    }
+
+    .checkbox input {
+      width: auto;
+    }
+
+    .sample-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      max-height: 420px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .sample {
+      border: 2px solid transparent;
+      background: #fff;
+      border-radius: 12px;
+      padding: 7px;
+      cursor: pointer;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+
+    .sample.active {
+      border-color: var(--accent);
+    }
+
+    .thumb {
+      height: 72px;
+      border-radius: 9px;
+      position: relative;
+      overflow: hidden;
+      background: #e2e8f0;
+      margin-bottom: 6px;
+    }
+
+    .thumb.dark { background: #0b1020; }
+    .thumb.cyber { background: #020617; }
+    .thumb.warm { background: #fff7ed; }
+    .thumb.science { background: #f0fdfa; }
+    .thumb.editorial { background: #fafaf9; }
+    .thumb.startup { background: #111827; }
+
+    .thumb .line {
+      position: absolute;
+      left: 10px;
+      height: 5px;
+      border-radius: 9px;
+      background: currentColor;
+      opacity: .9;
+    }
+
+    .thumb .line.a { top: 13px; width: 54%; }
+    .thumb .line.b { top: 25px; width: 38%; opacity: .55; }
+    .thumb .line.c { top: 40px; width: 28%; opacity: .45; }
+
+    .thumb .card {
+      position: absolute;
+      background: rgba(255,255,255,.86);
+      border-radius: 6px;
+    }
+
+    .thumb .dot {
+      position: absolute;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .thumb.split { color: #38bdf8; }
+    .thumb.split .card { right: 8px; top: 12px; width: 42%; height: 48px; }
+
+    .thumb.cards { color: #1d4ed8; }
+    .thumb.cards .card:nth-child(1) { left: 10px; top: 28px; width: 36px; height: 24px; }
+    .thumb.cards .card:nth-child(2) { left: 52px; top: 28px; width: 36px; height: 24px; }
+    .thumb.cards .card:nth-child(3) { left: 94px; top: 28px; width: 36px; height: 24px; }
+
+    .thumb.timeline { color: #f97316; }
+    .thumb.timeline::after {
+      content: "";
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      top: 43px;
+      height: 3px;
+      background: currentColor;
+      opacity: .55;
+    }
+    .thumb.timeline .dot:nth-child(1) { left: 20px; top: 39px; }
+    .thumb.timeline .dot:nth-child(2) { left: 58px; top: 39px; }
+    .thumb.timeline .dot:nth-child(3) { left: 96px; top: 39px; }
+
+    .thumb.quote { color: #a855f7; }
+    .thumb.quote::before {
+      content: "“";
+      position: absolute;
+      left: 12px;
+      top: 0;
+      font-size: 42px;
+      font-weight: bold;
+      color: currentColor;
+    }
+
+    .thumb.compare { color: #a855f7; }
+    .thumb.compare .card:nth-child(1) { left: 10px; top: 24px; width: 54px; height: 36px; }
+    .thumb.compare .card:nth-child(2) { right: 10px; top: 24px; width: 54px; height: 36px; }
+
+    .thumb.data { color: #1d4ed8; }
+    .thumb.data .bar {
+      position: absolute;
+      bottom: 12px;
+      width: 10px;
+      background: currentColor;
+      border-radius: 3px 3px 0 0;
+    }
+
+    .sample-name {
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .sample-desc {
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1.25;
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+  <h1>AI Slide Designer</h1>
+  <p>Choose a sample, paste raw text, then redesign one slide or insert one new slide.</p>
+
+  <label for="rawText">Raw text</label>
+  <textarea id="rawText" placeholder="Paste messy notes, a paragraph, bullet points, or a slide idea here..."></textarea>
+
+  <h2>Preview samples</h2>
+  <div id="sampleGrid" class="sample-grid"></div>
+
+  <div class="row">
+    <div>
+      <label for="theme">Theme override</label>
+      <select id="theme">
+        <option value="auto">Auto / sample theme</option>
+      </select>
+    </div>
+    <div>
+      <label for="density">Density</label>
+      <select id="density">
+        <option value="light">Light</option>
+        <option value="balanced" selected>Balanced</option>
+        <option value="dense">Dense</option>
+      </select>
+    </div>
+  </div>
+
+  <label class="checkbox">
+    <input type="checkbox" id="useGroq">
+    Use Groq AI if key is saved
+  </label>
+
+  <div class="panel">
+    <label for="apiKeys" style="margin-top:0">Groq API key(s)</label>
+    <textarea id="apiKeys" style="min-height:70px" placeholder="Paste one key per line. Supports up to 10 keys, like GROQ_API_KEY through GROQ_API_KEY9."></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="ghost" onclick="saveKeys()">Save keys</button>
+      <button class="ghost" onclick="clearKeys()">Clear keys</button>
+    </div>
+    <p class="tiny" id="keyStatus" style="margin-top:8px">Without keys, it uses a local rule-based designer.</p>
+  </div>
+
+  <div class="row" style="margin-top:12px">
+    <button id="designBtn" onclick="designCurrent()">Design current</button>
+    <button class="secondary" id="insertBtn" onclick="insertNew()">Insert new</button>
+  </div>
+
+  <div id="status" class="status"></div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const designBtn = document.getElementById('designBtn');
+    const insertBtn = document.getElementById('insertBtn');
+
+    let selectedSampleId = 'auto';
+    let samples = [];
+
+    function setBusy(isBusy) {
+      designBtn.disabled = isBusy;
+      insertBtn.disabled = isBusy;
+    }
+
+    function showStatus(message, isError) {
+      statusEl.textContent = message;
+      statusEl.className = 'status' + (isError ? ' error' : '');
+      statusEl.style.display = 'block';
+    }
+
+    function getOptions() {
+      return {
+        themeId: document.getElementById('theme').value,
+        sampleId: selectedSampleId,
+        layout: 'auto',
+        density: document.getElementById('density').value,
+        useGroq: document.getElementById('useGroq').checked,
+        language: 'auto'
+      };
+    }
+
+    function getRawText() {
+      return document.getElementById('rawText').value.trim();
+    }
+
+    function designCurrent() {
+      const rawText = getRawText();
+      if (!rawText) return showStatus('Paste raw text first.', true);
+      setBusy(true);
+      showStatus('Designing current slide...', false);
+
+      google.script.run
+        .withSuccessHandler(res => {
+          setBusy(false);
+          showStatus(formatResult(res), false);
+        })
+        .withFailureHandler(err => {
+          setBusy(false);
+          showStatus(err.message || String(err), true);
+        })
+        .designCurrentSlide(rawText, getOptions());
+    }
+
+    function insertNew() {
+      const rawText = getRawText();
+      if (!rawText) return showStatus('Paste raw text first.', true);
+      setBusy(true);
+      showStatus('Inserting one designed slide...', false);
+
+      google.script.run
+        .withSuccessHandler(res => {
+          setBusy(false);
+          showStatus(formatResult(res), false);
+        })
+        .withFailureHandler(err => {
+          setBusy(false);
+          showStatus(err.message || String(err), true);
+        })
+        .insertDesignedSlide(rawText, getOptions());
+    }
+
+    function formatResult(res) {
+      let msg = 'Done.\nTitle: ' + res.title +
+        '\nSample: ' + res.sampleName +
+        '\nTheme: ' + res.themeName +
+        '\nLayout: ' + res.layout +
+        '\nEngine: ' + res.source;
+
+      if (res.groqModel) msg += '\nGroq model: ' + res.groqModel;
+      if (res.groqKeyName) msg += '\nGroq key slot: ' + res.groqKeyName;
+      return msg;
+    }
+
+    function saveKeys() {
+      const keys = document.getElementById('apiKeys').value.trim();
+      if (!keys) return showStatus('Paste at least one Groq API key first.', true);
+      showStatus('Saving Groq key(s)...', false);
+
+      google.script.run
+        .withSuccessHandler(res => {
+          document.getElementById('apiKeys').value = '';
+          document.getElementById('useGroq').checked = true;
+          document.getElementById('keyStatus').textContent = 'Saved ' + res.count + ' Groq key(s).';
+          showStatus(res.message, false);
+        })
+        .withFailureHandler(err => showStatus(err.message || String(err), true))
+        .saveGroqApiKeys(keys);
+    }
+
+    function clearKeys() {
+      google.script.run
+        .withSuccessHandler(res => {
+          document.getElementById('useGroq').checked = false;
+          document.getElementById('keyStatus').textContent = 'Without keys, it uses a local rule-based designer.';
+          showStatus(res.message, false);
+        })
+        .withFailureHandler(err => showStatus(err.message || String(err), true))
+        .clearSavedGroqKeys();
+    }
+
+    function renderSamples() {
+      const grid = document.getElementById('sampleGrid');
+      grid.innerHTML = '';
+
+      samples.forEach(sample => {
+        const item = document.createElement('div');
+        item.className = 'sample' + (sample.id === selectedSampleId ? ' active' : '');
+        item.onclick = () => {
+          selectedSampleId = sample.id;
+          renderSamples();
+        };
+
+        item.innerHTML = `
+          <div class="${thumbClass(sample)}">${thumbInner(sample)}</div>
+          <div class="sample-name">${escapeHtml(sample.name)}</div>
+          <div class="sample-desc">${escapeHtml(sample.description)}</div>
+        `;
+
+        grid.appendChild(item);
+      });
+    }
+
+    function thumbClass(sample) {
+      const theme = sample.themeId || '';
+      let cls = 'thumb ' + (sample.preview || 'split');
+      if (theme.includes('tech')) cls += ' dark';
+      if (theme.includes('cyber')) cls += ' cyber';
+      if (theme.includes('education')) cls += ' warm';
+      if (theme.includes('science')) cls += ' science';
+      if (theme.includes('minimal')) cls += ' editorial';
+      if (theme.includes('startup')) cls += ' startup';
+      return cls;
+    }
+
+    function thumbInner(sample) {
+      const p = sample.preview;
+      if (p === 'cards') {
+        return '<span class="line a"></span><span class="card"></span><span class="card"></span><span class="card"></span>';
+      }
+      if (p === 'timeline') {
+        return '<span class="line a"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+      }
+      if (p === 'quote') {
+        return '<span class="line a" style="left:40px;top:28px;width:58%"></span><span class="line b" style="left:40px;top:42px;width:42%"></span>';
+      }
+      if (p === 'compare') {
+        return '<span class="line a"></span><span class="card"></span><span class="card"></span>';
+      }
+      if (p === 'data') {
+        return '<span class="line a"></span><span class="bar" style="left:78px;height:22px"></span><span class="bar" style="left:94px;height:36px"></span><span class="bar" style="left:110px;height:48px"></span>';
+      }
+      if (p === 'hero') {
+        return '<span class="line a"></span><span class="line b"></span><span class="line c"></span><span class="card" style="right:12px;top:16px;width:36px;height:36px;border-radius:50%"></span>';
+      }
+      return '<span class="line a"></span><span class="line b"></span><span class="line c"></span><span class="card"></span>';
+    }
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function loadState() {
+      google.script.run
+        .withSuccessHandler(state => {
+          const theme = document.getElementById('theme');
+          state.themes
+            .filter(t => t.id !== 'auto')
+            .forEach(t => {
+              const opt = document.createElement('option');
+              opt.value = t.id;
+              opt.textContent = t.name;
+              theme.appendChild(opt);
+            });
+
+          samples = state.samples || [];
+          renderSamples();
+
+          document.getElementById('useGroq').checked = state.hasGroqKeys;
+          if (state.hasGroqKeys) {
+            document.getElementById('keyStatus').textContent = 'Saved ' + state.savedGroqKeyCount + ' Groq key(s).';
+          }
+        })
+        .withFailureHandler(err => showStatus(err.message || String(err), true))
+        .getAddonState();
+    }
+
+    loadState();
+  </script>
+</body>
+</html>

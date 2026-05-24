@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Home Language Filter",
+  "version": "1.1.0",
+  "description": "Filters YouTube homepage videos by title language/script without affecting search, playlists, or watch pages.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "YouTube Home Language Filter",
+    "default_popup": "popup.html"
+  }
+}

@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>YouTube Home Language Filter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>YouTube Home Filter</h1>
+    <p class="note">
+      Filters only <strong>https://www.youtube.com/</strong>.
+      Search, playlists, watch pages, and other YouTube URLs are ignored.
+    </p>
+
+    <label class="row">
+      <input id="enabled" type="checkbox">
+      Enable filtering
+    </label>
+
+    <label for="language">Language/script to block</label>
+    <select id="language">
+      <option value="english">English/common English words</option>
+      <option value="cjk">Chinese/Japanese/Korean characters</option>
+      <option value="chinese">Chinese characters</option>
+      <option value="japanese">Japanese kana/kanji</option>
+      <option value="korean">Korean Hangul</option>
+      <option value="arabic">Arabic script</option>
+      <option value="cyrillic">Cyrillic script</option>
+      <option value="devanagari">Devanagari script</option>
+      <option value="hebrew">Hebrew script</option>
+      <option value="thai">Thai script</option>
+      <option value="vietnamese">Vietnamese diacritics</option>
+      <option value="custom">Custom word regex</option>
+    </select>
+
+    <section id="customBox" class="hidden">
+      <label for="customRegex">Custom word regex</label>
+      <input id="customRegex" placeholder="Example: \b(the|and|you)\b">
+      <p class="hint">Do not include leading/trailing slashes. Matching is case-insensitive.</p>
+    </section>
+
+    <section id="wordBox">
+      <label for="minWordHits">Minimum word hits</label>
+      <input id="minWordHits" type="number" min="1" max="10" step="1">
+      <p class="hint">Use 1 to catch titles like “The Boys”. Use 2 to reduce false positives.</p>
+    </section>
+
+    <section id="thresholdBox">
+      <label for="threshold">Minimum character match ratio</label>
+      <input id="threshold" type="range" min="0.05" max="1" step="0.05">
+      <div class="value">
+        <span id="thresholdText"></span>
+      </div>
+    </section>
+
+    <button id="save">Save</button>
+    <p id="status"></p>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
