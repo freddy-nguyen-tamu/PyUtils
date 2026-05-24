@@ -15,7 +15,37 @@ const authStatus = document.getElementById("authStatus");
 const signInBtn = document.getElementById("signInBtn");
 const signOutBtn = document.getElementById("signOutBtn");
 
-document.getElementById("viewAllBtn").onclick = showComics;
+function showError(err, prefix = "Error") {
+  const message = formatError(err);
+  app.innerHTML = `<p class="error">${escapeHtml(prefix)}: ${escapeHtml(message)}</p>`;
+  console.error(prefix, err);
+}
+
+function formatError(err) {
+  if (!err) return "Unknown error";
+  if (typeof err === "string") return err;
+  if (err.message && typeof err.message === "string") return err.message;
+  if (err.error && typeof err.error === "string") return err.error;
+  if (err.details && typeof err.details === "string") return err.details;
+  if (err.result && err.result.error) {
+    const e = err.result.error;
+    return e.message || JSON.stringify(e, null, 2);
+  }
+  if (err.body) {
+    try {
+      const parsed = JSON.parse(err.body);
+      return parsed.error?.message || JSON.stringify(parsed, null, 2);
+    } catch (_) {
+      return String(err.body);
+    }
+  }
+  try { return JSON.stringify(err, null, 2); } catch (_) { return String(err); }
+}
+
+window.addEventListener("error", (event) => showError(event.error || event.message, "JavaScript error"));
+window.addEventListener("unhandledrejection", (event) => showError(event.reason, "Promise error"));
+
+document.getElementById("viewAllBtn").onclick = () => { try { showComics(); } catch (err) { showError(err, "Could not show comics"); } };
 signInBtn.onclick = signIn;
 signOutBtn.onclick = signOut;
 
@@ -34,7 +64,7 @@ function setupAuthIfReady() {
     scope: DRIVE_SCOPE,
     callback: (resp) => {
       if (resp.error) {
-        authStatus.textContent = resp.error;
+        authStatus.textContent = formatError(resp);
         return;
       }
       accessToken = resp.access_token;
@@ -76,9 +106,11 @@ function getComics() {
     const comics = saved ? JSON.parse(saved) : SITE_CONFIG.comics;
     if (!Array.isArray(comics)) throw new Error("metadata is not a list");
     for (const comic of comics) {
-      if (!comic || !comic.id || !comic.title || !Array.isArray(comic.roots)) {
+      if (!comic || !comic.id || !Array.isArray(comic.roots)) {
         throw new Error("metadata has an invalid comic entry");
       }
+      if (!comic.title && comic.name) comic.title = comic.name;
+      if (!comic.title) comic.title = comic.id;
     }
     return comics;
   } catch (err) {
@@ -155,8 +187,7 @@ async function readChapter(comicId, chapterNumber) {
     }
     renderChapter();
   } catch (err) {
-    const message = err && err.message ? err.message : String(err || "Unknown error");
-    app.innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
+    showError(err, `Could not load chapter ${chapterNumber}`);
   }
 }
 
@@ -340,7 +371,7 @@ async function getRootFolderId(root) {
 async function getChapterFolderId(comic, chapterNumber, createIfMissing) {
   const root = getRootForChapter(comic, chapterNumber);
   const rootId = await getRootFolderId(root);
-  const folderName = `${comic.chapterFolderPrefix}${chapterNumber}`;
+  const folderName = `${comic.chapterFolderPrefix}${String(chapterNumber).padStart(4, "0")}`;
   const q = `'${rootId}' in parents and mimeType='application/vnd.google-apps.folder' and name='${escapeQuery(folderName)}' and trashed=false`;
   const res = await gapi.client.drive.files.list({ q, fields: "files(id,name)", spaces: "drive" });
   if (res.result.files.length) return res.result.files[0].id;
@@ -354,13 +385,20 @@ async function getChapterFolderId(comic, chapterNumber, createIfMissing) {
 
 async function listImages(folderId) {
   const q = `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`;
-  const res = await gapi.client.drive.files.list({
-    q,
-    fields: "files(id,name,mimeType)",
-    pageSize: 1000,
-    spaces: "drive"
-  });
-  return res.result.files.sort((a,b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  let all = [];
+  let pageToken = null;
+  do {
+    const res = await gapi.client.drive.files.list({
+      q,
+      fields: "nextPageToken,files(id,name,mimeType)",
+      pageSize: 1000,
+      spaces: "drive",
+      pageToken
+    });
+    all = all.concat(res.result.files || []);
+    pageToken = res.result.nextPageToken || null;
+  } while (pageToken);
+  return all.sort((a,b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 }
 
 async function getFileBlobUrl(fileId) {
