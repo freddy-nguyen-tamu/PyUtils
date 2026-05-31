@@ -8,6 +8,12 @@ let gisReady = false;
 let currentComic = null;
 let currentChapter = null;
 let currentImages = [];
+let currentObserver = null;
+
+// In-memory cache for the current browser tab.
+// This keeps already visited chapters instant when you go next, then back.
+const chapterFileCache = new Map(); // key: comicId:chapterNumber -> Drive file metadata list
+const imageUrlCache = new Map();    // key: Drive file ID -> blob URL
 
 const app = document.getElementById("app");
 const authBox = document.getElementById("authBox");
@@ -95,9 +101,16 @@ function signOut() {
   if (accessToken) google.accounts.oauth2.revoke(accessToken);
   accessToken = null;
   gapi.client.setToken(null);
+  clearReaderCache();
   authStatus.textContent = "Signed out";
   signInBtn.hidden = false;
   signOutBtn.hidden = true;
+}
+
+function clearReaderCache() {
+  chapterFileCache.clear();
+  for (const url of imageUrlCache.values()) URL.revokeObjectURL(url);
+  imageUrlCache.clear();
 }
 
 function getComics() {
@@ -174,25 +187,32 @@ async function readChapter(comicId, chapterNumber) {
   if (!accessToken) return;
   currentComic = findComic(comicId);
   currentChapter = chapterNumber;
+
+  const cacheKey = getChapterCacheKey(comicId, chapterNumber);
+  const cachedFiles = chapterFileCache.get(cacheKey);
+  if (cachedFiles) {
+    renderChapter(cachedFiles);
+    return;
+  }
+
   app.innerHTML = `<p>Loading chapter ${chapterNumber}...</p>`;
   try {
     const folderId = await getChapterFolderId(currentComic, chapterNumber, false);
     if (!folderId) throw new Error("Chapter folder was not found.");
+
+    // This only lists the JPG metadata. It does not download every page.
     const files = await listImages(folderId);
-    currentImages.forEach(u => URL.revokeObjectURL(u.url));
-    currentImages = [];
-    for (const file of files) {
-      const url = await getFileBlobUrl(file.id);
-      currentImages.push({ name: file.name, url });
-    }
-    renderChapter();
+    chapterFileCache.set(cacheKey, files);
+    renderChapter(files);
   } catch (err) {
     showError(err, `Could not load chapter ${chapterNumber}`);
   }
 }
 
-function renderChapter() {
+function renderChapter(files) {
   app.innerHTML = "";
+  if (currentObserver) currentObserver.disconnect();
+
   const nav = document.createElement("div");
   nav.className = "nav";
 
@@ -221,16 +241,55 @@ function renderChapter() {
   nav.append(prev, document.createTextNode(` Chapter ${currentChapter} `), next, list, select);
   app.appendChild(nav);
 
-  if (currentImages.length === 0) {
+  if (!files || files.length === 0) {
     app.insertAdjacentHTML("beforeend", "<p>No JPG images found.</p>");
     return;
   }
-  currentImages.forEach(imgInfo => {
+
+  const status = document.createElement("p");
+  status.textContent = `Found ${files.length} pages. Images load as you scroll.`;
+  app.appendChild(status);
+
+  currentObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const img = entry.target;
+      currentObserver.unobserve(img);
+      loadImageIntoElement(img, img.dataset.fileId, img.dataset.fileName);
+    }
+  }, { rootMargin: "1200px 0px" });
+
+  for (const file of files) {
     const img = document.createElement("img");
-    img.src = imgInfo.url;
-    img.alt = imgInfo.name;
+    img.alt = file.name;
+    img.dataset.fileId = file.id;
+    img.dataset.fileName = file.name;
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.style.minHeight = "300px";
+    img.style.display = "block";
+    img.style.marginBottom = "12px";
+    currentObserver.observe(img);
     app.appendChild(img);
-  });
+  }
+}
+
+async function loadImageIntoElement(img, fileId, fileName) {
+  try {
+    let url = imageUrlCache.get(fileId);
+    if (!url) {
+      url = await getFileBlobUrl(fileId);
+      imageUrlCache.set(fileId, url);
+    }
+    img.src = url;
+    img.style.minHeight = "";
+  } catch (err) {
+    img.replaceWith(document.createTextNode(`Could not load ${fileName}: ${formatError(err)}`));
+  }
+}
+
+function getChapterCacheKey(comicId, chapterNumber) {
+  return `${comicId}:${chapterNumber}`;
 }
 
 function previousChapter() {
@@ -345,7 +404,8 @@ async function uploadChapter(chapterNumber, files) {
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     const num = String(i + 1).padStart(currentComic.padImageNumberTo || 3, "0");
-    const name = `${currentComic.imageFilePrefix}${chapterNumber}_${num}.${currentComic.imageExtension || "jpg"}`;
+    const chapterText = String(chapterNumber).padStart(4, "0");
+    const name = `${currentComic.imageFilePrefix}${chapterText}_${num}.${currentComic.imageExtension || "jpg"}`;
     await uploadDriveFile(folderId, name, file);
   }
 }
