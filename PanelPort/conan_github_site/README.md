@@ -1,4 +1,4 @@
-# Conan Simple Site
+# PanelPort
 
 A static Google Drive comic reader/uploader that can be deployed directly with GitHub Pages.
 
@@ -15,7 +15,7 @@ A static Google Drive comic reader/uploader that can be deployed directly with G
 1. Create a GitHub repository, for example:
 
 ```text
-conan-reader
+panelport
 ```
 
 2. Upload these files to the repository root:
@@ -46,7 +46,7 @@ Folder: / root
 5. Save. Your website URL will look like:
 
 ```text
-https://YOUR_GITHUB_USERNAME.github.io/conan-reader/
+https://YOUR_GITHUB_USERNAME.github.io/panelport/
 ```
 
 ## Google OAuth setup for GitHub Pages
@@ -75,6 +75,16 @@ clientId: "YOUR_CLIENT_ID.apps.googleusercontent.com"
 
 5. Share every Google Drive root folder with the Google account you sign in with on the website.
 
+## Public read mode
+
+Publicly shared Drive folders can be read without signing in when `config.js` has a Drive API key:
+
+```js
+apiKey: "YOUR_API_KEY"
+```
+
+Sign-in is still required for uploads and private folders.
+
 ## Drive folder IDs
 
 For best reliability, paste each root folder ID into `config.js` under `rootFolderId`.
@@ -95,7 +105,7 @@ Folder ID:
 
 ## Expected folder format
 
-Root folders:
+Conan root folders:
 
 ```text
 conan1
@@ -117,6 +127,18 @@ Images:
 ```text
 Conan_Chapter_1095_001.jpg
 Conan_Chapter_1095_002.jpg
+```
+
+Doraemon also supports explicitly configured folder chapters:
+
+```text
+doraemon/
+  1_to_15/
+  16_to_30/
+  31_to_45/
+  The_First_Letter/
+  The_Grand_Collection/
+  The_Night_Before_Nobita's_Wedding/
 ```
 
 ## Use

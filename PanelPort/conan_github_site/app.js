@@ -9,9 +9,16 @@ let currentComic = null;
 let currentChapter = null;
 let currentImages = [];
 let currentObserver = null;
+let currentReaderRun = 0;
+let readerScrollAttached = false;
+let readerScrollQueued = false;
+let lastReaderImageWorkAt = 0;
 
-// In-memory cache for the current browser tab.
-// This keeps already visited chapters instant when you go next, then back.
+const MAX_LOADED_IMAGES = 30;
+const IMAGE_LOAD_MARGIN_PX = 1600;
+
+// In-memory metadata/cache for the current browser tab.
+// Chapter file metadata is tiny; JPG blob URLs are kept to a small sliding window.
 const chapterFileCache = new Map(); // key: comicId:chapterNumber -> Drive file metadata list
 const imageUrlCache = new Map();    // key: Drive file ID -> blob URL
 
@@ -83,9 +90,17 @@ function setupAuthIfReady() {
   gisReady = true;
 }
 
-function needAuth() {
+function getDriveApiKey() {
+  return String(SITE_CONFIG.apiKey || "").trim();
+}
+
+function canReadDrive() {
+  return Boolean(accessToken || getDriveApiKey());
+}
+
+function needAuth(reason = "reading or uploading") {
   authBox.hidden = false;
-  if (!accessToken) authStatus.textContent = "Sign in before reading or uploading.";
+  if (!accessToken) authStatus.textContent = `Sign in before ${reason}.`;
 }
 
 function signIn() {
@@ -109,15 +124,45 @@ function signOut() {
 
 function clearReaderCache() {
   chapterFileCache.clear();
+  releaseImageResources();
+}
+
+function releaseImageResources() {
+  currentReaderRun += 1;
+  if (currentObserver) {
+    currentObserver.disconnect();
+    currentObserver = null;
+  }
+  detachReaderScroll();
+  for (const img of currentImages) {
+    if (img && img.isConnected) img.removeAttribute("src");
+  }
+  currentImages = [];
   for (const url of imageUrlCache.values()) URL.revokeObjectURL(url);
   imageUrlCache.clear();
+}
+
+function detachReaderScroll() {
+  if (!readerScrollAttached) return;
+  window.removeEventListener("scroll", scheduleReaderImageWork);
+  window.removeEventListener("resize", scheduleReaderImageWork);
+  readerScrollAttached = false;
+  readerScrollQueued = false;
+  lastReaderImageWorkAt = 0;
 }
 
 function getComics() {
   const saved = localStorage.getItem("comic_metadata");
   try {
-    const comics = saved ? JSON.parse(saved) : SITE_CONFIG.comics;
+    const defaultComics = Array.isArray(SITE_CONFIG.comics) ? SITE_CONFIG.comics : [];
+    const comics = saved ? JSON.parse(saved) : defaultComics;
     if (!Array.isArray(comics)) throw new Error("metadata is not a list");
+    if (saved) {
+      const savedIds = new Set(comics.map(comic => comic && comic.id));
+      for (const comic of defaultComics) {
+        if (comic && comic.id && !savedIds.has(comic.id)) comics.push(comic);
+      }
+    }
     for (const comic of comics) {
       if (!comic || !comic.id || !Array.isArray(comic.roots)) {
         throw new Error("metadata has an invalid comic entry");
@@ -162,6 +207,43 @@ function findComic(id) {
   return getComics().find(c => c.id === id);
 }
 
+function hasConfiguredChapters(comic) {
+  return Array.isArray(comic.chapters) && comic.chapters.length > 0;
+}
+
+function getChapterEntries(comic) {
+  if (hasConfiguredChapters(comic)) {
+    return comic.chapters.map((chapter, index) => {
+      const number = Number(chapter.number != null ? chapter.number : index + 1);
+      const title = chapter.title || chapter.name || chapter.folderName || String(number);
+      return { ...chapter, number, title };
+    }).filter(chapter => Number.isFinite(chapter.number));
+  }
+
+  const first = Number(comic.firstChapter || 1);
+  const last = Number(comic.lastChapter || first);
+  const chapters = [];
+  for (let number = first; number <= last; number++) {
+    chapters.push({ number, title: String(number) });
+  }
+  return chapters;
+}
+
+function getChapterEntry(comic, chapterNumber) {
+  const number = Number(chapterNumber);
+  return getChapterEntries(comic).find(chapter => chapter.number === number);
+}
+
+function getChapterLabel(comic, chapterNumber) {
+  const chapter = getChapterEntry(comic, chapterNumber);
+  return chapter ? chapter.title : String(chapterNumber);
+}
+
+function getChapterNavLabel(comic, chapterNumber) {
+  const label = getChapterLabel(comic, chapterNumber);
+  return hasConfiguredChapters(comic) ? label : `Chapter ${label}`;
+}
+
 function showChapterList(comicId) {
   currentComic = findComic(comicId);
   if (!currentComic) {
@@ -174,19 +256,32 @@ function showChapterList(comicId) {
   back.onclick = showComics;
   app.appendChild(back);
 
-  for (let n = currentComic.firstChapter; n <= currentComic.lastChapter; n++) {
+  const chapters = getChapterEntries(currentComic);
+  if (!chapters.length) {
+    app.insertAdjacentHTML("beforeend", '<p class="error">No chapters are configured for this comic.</p>');
+    return;
+  }
+
+  for (const chapter of chapters) {
     const btn = document.createElement("button");
-    btn.textContent = String(n);
-    btn.onclick = () => readChapter(currentComic.id, n);
+    btn.textContent = chapter.title;
+    btn.onclick = () => readChapter(currentComic.id, chapter.number);
     app.appendChild(btn);
   }
 }
 
 async function readChapter(comicId, chapterNumber) {
-  needAuth();
-  if (!accessToken) return;
+  if (!canReadDrive()) {
+    needAuth("reading");
+    return;
+  }
   currentComic = findComic(comicId);
+  if (!currentComic) {
+    app.innerHTML = '<p class="error">Comic not found. Clear browser localStorage or reset metadata.</p>';
+    return;
+  }
   currentChapter = chapterNumber;
+  const chapterLabel = getChapterNavLabel(currentComic, chapterNumber);
 
   const cacheKey = getChapterCacheKey(comicId, chapterNumber);
   const cachedFiles = chapterFileCache.get(cacheKey);
@@ -195,7 +290,10 @@ async function readChapter(comicId, chapterNumber) {
     return;
   }
 
-  app.innerHTML = `<p>Loading chapter ${chapterNumber}...</p>`;
+  app.innerHTML = "";
+  const loading = document.createElement("p");
+  loading.textContent = `Loading ${chapterLabel}...`;
+  app.appendChild(loading);
   try {
     const folderId = await getChapterFolderId(currentComic, chapterNumber, false);
     if (!folderId) throw new Error("Chapter folder was not found.");
@@ -205,13 +303,18 @@ async function readChapter(comicId, chapterNumber) {
     chapterFileCache.set(cacheKey, files);
     renderChapter(files);
   } catch (err) {
-    showError(err, `Could not load chapter ${chapterNumber}`);
+    if (!accessToken && getDriveApiKey()) {
+      authBox.hidden = false;
+      authStatus.textContent = "Public read failed. Sign in if this folder is private or the API key restrictions need updating.";
+    }
+    showError(err, `Could not load ${chapterLabel}`);
   }
 }
 
 function renderChapter(files) {
+  releaseImageResources();
+  const readerRun = currentReaderRun;
   app.innerHTML = "";
-  if (currentObserver) currentObserver.disconnect();
 
   const nav = document.createElement("div");
   nav.className = "nav";
@@ -225,11 +328,12 @@ function renderChapter(files) {
   next.onclick = nextChapter;
 
   const select = document.createElement("select");
-  for (let n = currentComic.firstChapter; n <= currentComic.lastChapter; n++) {
+  const chapters = getChapterEntries(currentComic);
+  for (const chapter of chapters) {
     const opt = document.createElement("option");
-    opt.value = n;
-    opt.textContent = n;
-    if (n === currentChapter) opt.selected = true;
+    opt.value = chapter.number;
+    opt.textContent = chapter.title;
+    if (chapter.number === currentChapter) opt.selected = true;
     select.appendChild(opt);
   }
   select.onchange = () => readChapter(currentComic.id, Number(select.value));
@@ -238,7 +342,7 @@ function renderChapter(files) {
   list.textContent = "☰";
   list.onclick = () => select.focus();
 
-  nav.append(prev, document.createTextNode(` Chapter ${currentChapter} `), next, list, select);
+  nav.append(prev, document.createTextNode(` ${getChapterNavLabel(currentComic, currentChapter)} `), next, list, select);
   app.appendChild(nav);
 
   if (!files || files.length === 0) {
@@ -247,45 +351,186 @@ function renderChapter(files) {
   }
 
   const status = document.createElement("p");
-  status.textContent = `Found ${files.length} pages. Images load as you scroll.`;
+  status.textContent = `Found ${files.length} pages. Images load as you scroll. Keeping up to ${MAX_LOADED_IMAGES} JPGs in memory.`;
   app.appendChild(status);
 
   currentObserver = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
       const img = entry.target;
-      currentObserver.unobserve(img);
-      loadImageIntoElement(img, img.dataset.fileId, img.dataset.fileName);
+      loadImageIntoElement(img, img.dataset.fileId, img.dataset.fileName, img.dataset.resourceKey);
     }
-  }, { rootMargin: "1200px 0px" });
+  }, { rootMargin: `${IMAGE_LOAD_MARGIN_PX}px 0px` });
 
-  for (const file of files) {
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
     const img = document.createElement("img");
     img.alt = file.name;
     img.dataset.fileId = file.id;
     img.dataset.fileName = file.name;
+    img.dataset.resourceKey = file.resourceKey || "";
+    img.dataset.pageIndex = String(index);
+    img.dataset.readerRun = String(readerRun);
     img.loading = "lazy";
     img.decoding = "async";
     img.style.minHeight = "300px";
     img.style.display = "block";
-    img.style.marginBottom = "12px";
+    img.style.marginBottom = "0";
+    currentImages.push(img);
     currentObserver.observe(img);
     app.appendChild(img);
   }
+  window.addEventListener("scroll", scheduleReaderImageWork, { passive: true });
+  window.addEventListener("resize", scheduleReaderImageWork);
+  readerScrollAttached = true;
+  runReaderImageWork();
 }
 
-async function loadImageIntoElement(img, fileId, fileName) {
+function scheduleReaderImageWork() {
+  if (!currentImages.length) return;
+  const now = Date.now();
+  if (now - lastReaderImageWorkAt >= 100) {
+    readerScrollQueued = false;
+    runReaderImageWork();
+    return;
+  }
+  if (readerScrollQueued) return;
+  readerScrollQueued = true;
+  setTimeout(() => {
+    readerScrollQueued = false;
+    runReaderImageWork();
+  }, 0);
+}
+
+function runReaderImageWork() {
+  lastReaderImageWorkAt = Date.now();
+  loadNearbyImages();
+  trimLoadedImages(getViewportCenterImageIndex());
+}
+
+function loadNearbyImages() {
+  for (const img of currentImages) {
+    if (!img.isConnected || !isImageNearViewport(img)) continue;
+    loadImageIntoElement(img, img.dataset.fileId, img.dataset.fileName, img.dataset.resourceKey);
+  }
+}
+
+function isImageNearViewport(img, margin = IMAGE_LOAD_MARGIN_PX) {
+  const rect = img.getBoundingClientRect();
+  return rect.bottom >= -margin && rect.top <= window.innerHeight + margin;
+}
+
+function getViewportCenterImageIndex() {
+  let closestIndex = null;
+  let closestDistance = Infinity;
+  const viewportCenter = window.innerHeight / 2;
+
+  for (const img of currentImages) {
+    if (!img.isConnected) continue;
+    const rect = img.getBoundingClientRect();
+    const imageCenter = rect.top + rect.height / 2;
+    const distance = Math.abs(imageCenter - viewportCenter);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestIndex = Number(img.dataset.pageIndex);
+    }
+  }
+
+  return closestIndex;
+}
+
+function trimLoadedImages(centerIndex) {
+  const loadedImages = currentImages.filter(img => img.isConnected && img.dataset.loaded === "true");
+  if (loadedImages.length <= MAX_LOADED_IMAGES) return;
+
+  const fallbackCenter = Number.isFinite(centerIndex) ? centerIndex : 0;
+  const removable = loadedImages.slice().sort((a, b) => {
+    const aVisible = isImageNearViewport(a, 0);
+    const bVisible = isImageNearViewport(b, 0);
+    if (aVisible !== bVisible) return aVisible ? 1 : -1;
+    const aDistance = Math.abs(Number(a.dataset.pageIndex) - fallbackCenter);
+    const bDistance = Math.abs(Number(b.dataset.pageIndex) - fallbackCenter);
+    return bDistance - aDistance;
+  });
+
+  for (let i = 0; i < loadedImages.length - MAX_LOADED_IMAGES; i++) {
+    unloadImageElement(removable[i]);
+  }
+}
+
+function unloadImageElement(img) {
+  const fileId = img.dataset.fileId;
+  const cachedUrl = fileId ? imageUrlCache.get(fileId) : null;
+  if (cachedUrl) {
+    URL.revokeObjectURL(cachedUrl);
+    imageUrlCache.delete(fileId);
+  }
+
+  if (img.isConnected) {
+    const currentHeight = img.getBoundingClientRect().height;
+    img.style.minHeight = `${Math.max(300, Math.ceil(currentHeight))}px`;
+    img.removeAttribute("src");
+  }
+  delete img.dataset.loaded;
+  delete img.dataset.loading;
+}
+
+function getCachedImageUrl(fileId) {
+  const cachedUrl = imageUrlCache.get(fileId);
+  if (!cachedUrl) return null;
+  imageUrlCache.delete(fileId);
+  imageUrlCache.set(fileId, cachedUrl);
+  return cachedUrl;
+}
+
+function setCachedImageUrl(fileId, url) {
+  const oldUrl = imageUrlCache.get(fileId);
+  if (oldUrl && oldUrl !== url) URL.revokeObjectURL(oldUrl);
+  imageUrlCache.delete(fileId);
+  imageUrlCache.set(fileId, url);
+}
+
+async function loadImageIntoElement(img, fileId, fileName, resourceKey = "") {
+  if (img.dataset.loaded === "true" || img.dataset.loading === "true") return;
+  if (img.dataset.readerRun !== String(currentReaderRun)) return;
+  img.dataset.loading = "true";
+
   try {
-    let url = imageUrlCache.get(fileId);
+    if (!accessToken) {
+      img.onerror = () => {
+        img.replaceWith(document.createTextNode(`Could not load ${fileName} from the public Drive URL.`));
+      };
+      img.src = buildPublicImageUrl(fileId, resourceKey);
+      img.dataset.loaded = "true";
+      img.style.minHeight = "";
+      trimLoadedImages(Number(img.dataset.pageIndex));
+      return;
+    }
+
+    let url = getCachedImageUrl(fileId);
     if (!url) {
-      url = await getFileBlobUrl(fileId);
-      imageUrlCache.set(fileId, url);
+      url = await getFileBlobUrl(fileId, resourceKey);
+      if (img.dataset.readerRun !== String(currentReaderRun) || !img.isConnected) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      setCachedImageUrl(fileId, url);
     }
     img.src = url;
+    img.dataset.loaded = "true";
     img.style.minHeight = "";
+    trimLoadedImages(Number(img.dataset.pageIndex));
   } catch (err) {
     img.replaceWith(document.createTextNode(`Could not load ${fileName}: ${formatError(err)}`));
+  } finally {
+    delete img.dataset.loading;
   }
+}
+
+function buildPublicImageUrl(fileId, resourceKey = "") {
+  const url = new URL(`https://lh3.googleusercontent.com/d/${encodeURIComponent(fileId)}`);
+  if (resourceKey) url.searchParams.set("resourcekey", resourceKey);
+  return url.toString();
 }
 
 function getChapterCacheKey(comicId, chapterNumber) {
@@ -293,11 +538,15 @@ function getChapterCacheKey(comicId, chapterNumber) {
 }
 
 function previousChapter() {
-  if (currentChapter > currentComic.firstChapter) readChapter(currentComic.id, currentChapter - 1);
+  const chapters = getChapterEntries(currentComic);
+  const index = chapters.findIndex(chapter => chapter.number === currentChapter);
+  if (index > 0) readChapter(currentComic.id, chapters[index - 1].number);
 }
 
 function nextChapter() {
-  if (currentChapter < currentComic.lastChapter) readChapter(currentComic.id, currentChapter + 1);
+  const chapters = getChapterEntries(currentComic);
+  const index = chapters.findIndex(chapter => chapter.number === currentChapter);
+  if (index >= 0 && index < chapters.length - 1) readChapter(currentComic.id, chapters[index + 1].number);
 }
 
 document.addEventListener("keydown", (e) => {
@@ -423,19 +672,24 @@ function getRootForChapter(comic, chapterNumber) {
 async function getRootFolderId(root) {
   if (root.rootFolderId) return root.rootFolderId;
   const q = `mimeType='application/vnd.google-apps.folder' and name='${escapeQuery(root.rootFolderName)}' and trashed=false`;
-  const res = await gapi.client.drive.files.list({ q, fields: "files(id,name)", spaces: "drive" });
-  if (!res.result.files.length) throw new Error(`Root folder not found: ${root.rootFolderName}. Paste its folder ID into metadata.`);
-  return res.result.files[0].id;
+  const files = await listDriveFiles({ q, fields: "nextPageToken,files(id,name,resourceKey)" });
+  if (!files.length) throw new Error(`Root folder not found: ${root.rootFolderName}. Paste its folder ID into metadata.`);
+  return files[0].id;
 }
 
 async function getChapterFolderId(comic, chapterNumber, createIfMissing) {
+  const chapter = getChapterEntry(comic, chapterNumber);
+  if (chapter && chapter.folderId) return chapter.folderId;
   const root = getRootForChapter(comic, chapterNumber);
   const rootId = await getRootFolderId(root);
-  const folderName = `${comic.chapterFolderPrefix}${String(chapterNumber).padStart(4, "0")}`;
+  const folderName = chapter && chapter.folderName
+    ? chapter.folderName
+    : `${comic.chapterFolderPrefix || ""}${String(chapterNumber).padStart(4, "0")}`;
   const q = `'${rootId}' in parents and mimeType='application/vnd.google-apps.folder' and name='${escapeQuery(folderName)}' and trashed=false`;
-  const res = await gapi.client.drive.files.list({ q, fields: "files(id,name)", spaces: "drive" });
-  if (res.result.files.length) return res.result.files[0].id;
+  const files = await listDriveFiles({ q, fields: "nextPageToken,files(id,name,resourceKey)" });
+  if (files.length) return files[0].id;
   if (!createIfMissing) return null;
+  if (!accessToken) throw new Error("Sign in before creating missing Drive folders.");
   const created = await gapi.client.drive.files.create({
     resource: { name: folderName, mimeType: "application/vnd.google-apps.folder", parents: [rootId] },
     fields: "id"
@@ -445,27 +699,71 @@ async function getChapterFolderId(comic, chapterNumber, createIfMissing) {
 
 async function listImages(folderId) {
   const q = `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`;
+  const all = await listDriveFiles({ q, fields: "nextPageToken,files(id,name,mimeType,resourceKey)" });
+  return all.sort((a,b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+}
+
+async function listDriveFiles({ q, fields }) {
   let all = [];
   let pageToken = null;
   do {
-    const res = await gapi.client.drive.files.list({
+    const result = await fetchDriveJson("files", {
       q,
-      fields: "nextPageToken,files(id,name,mimeType)",
+      fields,
       pageSize: 1000,
       spaces: "drive",
       pageToken
     });
-    all = all.concat(res.result.files || []);
-    pageToken = res.result.nextPageToken || null;
+    all = all.concat(result.files || []);
+    pageToken = result.nextPageToken || null;
   } while (pageToken);
-  return all.sort((a,b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return all;
 }
 
-async function getFileBlobUrl(fileId) {
-  const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  if (!res.ok) throw new Error("Could not load image from Drive.");
+async function fetchDriveJson(path, params) {
+  const res = await fetch(buildDriveUrl(path, params), { headers: getDriveReadHeaders() });
+  if (!res.ok) throw new Error(await getDriveResponseError(res, "Drive request failed."));
+  return res.json();
+}
+
+async function getFileBlobUrl(fileId, resourceKey = "") {
+  const params = { alt: "media" };
+  if (resourceKey) params.resourceKey = resourceKey;
+  const res = await fetch(buildDriveUrl(`files/${encodeURIComponent(fileId)}`, params), { headers: getDriveReadHeaders() });
+  if (!res.ok) throw new Error(await getDriveResponseError(res, "Could not load image from Drive."));
   return URL.createObjectURL(await res.blob());
+}
+
+function buildDriveUrl(path, params = {}) {
+  const url = new URL(`https://www.googleapis.com/drive/v3/${path}`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null && value !== "") url.searchParams.set(key, value);
+  }
+
+  if (!accessToken) {
+    const apiKey = getDriveApiKey();
+    if (!apiKey) throw new Error("Sign in or add a Drive API key before reading Drive files.");
+    url.searchParams.set("key", apiKey);
+  }
+  return url.toString();
+}
+
+function getDriveReadHeaders() {
+  return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+}
+
+async function getDriveResponseError(res, fallback) {
+  try {
+    const body = await res.json();
+    return body.error?.message || fallback;
+  } catch (_) {
+    try {
+      const text = await res.text();
+      return text || fallback;
+    } catch (__) {
+      return fallback;
+    }
+  }
 }
 
 async function uploadDriveFile(parentId, name, file) {
