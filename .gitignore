@@ -90,4 +90,4 @@ input.html
 clip
 
 # Ignore wrong gitignore filename if it exists
-gitignore
+gitignoreplaywright-*-profile/

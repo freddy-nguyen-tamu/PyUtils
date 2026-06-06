@@ -59,6 +59,12 @@ MAX_SUMMARY_CHARS = 14_000
 
 NEXT_KEY_START_INDEX = 0
 
+# Ignore generated Playwright browser profile folders like:
+#   playwright-outhere-profile
+#   playwright-anything-profile
+#   playwright-my-site-profile
+IGNORED_DIR_NAME_RE = re.compile(r"^playwright-.+-profile$", re.I)
+
 
 EXACT_COMMIT_PROMPT = """write git commit message for this commit following these requirements strictly:
 Commit messages provide both a summary of the code changes ("What") and the motivation or reason behind them ("Why")
@@ -365,6 +371,70 @@ def unstage_self() -> None:
         stream_cmd(["git", "reset", "--", self_git_path])
 
 
+def path_has_ignored_dir(git_path: str) -> bool:
+    """
+    Return True when a staged path is inside an ignored generated directory.
+
+    Examples ignored:
+      playwright-outhere-profile/Default/Cookies
+      tools/playwright-outhere-profile/Default/Cookies
+      playwright-test-profile/file.txt
+    """
+    parts = Path(git_path).parts
+    return any(IGNORED_DIR_NAME_RE.match(part) for part in parts)
+
+
+def get_ignored_staged_paths() -> list[str]:
+    """
+    Find staged paths that live inside ignored generated folders.
+    """
+    result = run_cmd(["git", "diff", "--cached", "--name-only"], check=True)
+    staged_paths = [
+        line.strip().replace("\\", "/")
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
+
+    return [path for path in staged_paths if path_has_ignored_dir(path)]
+
+
+def unstage_ignored_dirs() -> None:
+    """
+    Unstage generated Playwright profile folders after git add.
+
+    This avoids accidentally committing massive browser profile/cache folders
+    such as playwright-outhere-profile.
+    """
+    ignored_paths = get_ignored_staged_paths()
+
+    if not ignored_paths:
+        return
+
+    print("\nExcluding generated Playwright profile folder contents:")
+    for path in ignored_paths:
+        print(f"  - {path}")
+
+    # Use --pathspec-from-file to safely handle spaces and odd characters.
+    proc = subprocess.run(
+        ["git", "reset", "--pathspec-from-file=-"],
+        input="\n".join(ignored_paths) + "\n",
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    if proc.stdout.strip():
+        print(proc.stdout.strip())
+
+    if proc.returncode != 0:
+        if proc.stderr.strip():
+            print(proc.stderr.strip())
+        raise SystemExit(proc.returncode)
+
+
 def stage_changes(mode: str) -> None:
     if mode == "update":
         stream_cmd(["git", "add", "-u"])
@@ -374,6 +444,7 @@ def stage_changes(mode: str) -> None:
         raise ValueError(f"Unknown stage mode: {mode}")
 
     unstage_self()
+    unstage_ignored_dirs()
 
 
 def split_large_text(text: str, max_chars: int) -> list[str]:
