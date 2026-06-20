@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Facebook Reel See Less X Auto Close",
+  "version": "1.3.5",
+  "description": "Adds an X button on each Facebook Reel video player that opens the Reel menu and clicks See less.",
+  "content_scripts": [
+    {
+      "matches": ["https://www.facebook.com/reel/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

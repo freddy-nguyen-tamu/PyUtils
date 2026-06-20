@@ -91,3 +91,7 @@ clip
 
 # Ignore wrong gitignore filename if it exists
 gitignoreplaywright-*-profile/
+mangadistrict_header_remover/ 
+playwright-outhere-profile/ 
+toongod-scroll-fix/ 
+wavestack-normal-firefox-profile/

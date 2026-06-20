@@ -1,0 +1,31 @@
+/* No popups, no toast, no UI except the X button. */
+.yt-shorts-x-channel-button-container {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 0 auto !important;
+  width: 48px !important;
+  height: 48px !important;
+  margin-inline-end: 8px !important;
+  position: relative !important;
+  z-index: 999999 !important;
+  pointer-events: auto !important;
+  isolation: isolate !important;
+}
+
+.yt-shorts-x-channel-button-container > button {
+  width: 48px !important;
+  height: 48px !important;
+  min-width: 48px !important;
+  min-height: 48px !important;
+  cursor: pointer !important;
+  pointer-events: auto !important;
+  position: relative !important;
+  z-index: 999999 !important;
+  border-radius: 999px !important;
+}
+
+/* Keep it visually separated from the three-dot button instead of merging into one pill. */
+.yt-shorts-x-channel-button-container + #menu-button {
+  margin-inline-start: 0 !important;
+}

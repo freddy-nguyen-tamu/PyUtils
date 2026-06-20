@@ -27,7 +27,8 @@ from playwright.sync_api import sync_playwright
 #START_URL = "https://www.facebook.com/photo.php?fbid=2057196528551210&set=pb.100027826494002.-2207520000&type=3"
 #START_URL = "https://www.facebook.com/photo/?fbid=2616326998381328&set=g.282008595742131"
 #START_URL = "https://www.facebook.com/photo.php?fbid=875480885505867&set=pb.100091318902138.-2207520000&type=3"
-START_URL = "https://www.facebook.com/photo.php?fbid=3118425821674301&set=pb.100005207405108.-2207520000&type=3"
+#START_URL = "https://www.facebook.com/photo.php?fbid=3118425821674301&set=pb.100005207405108.-2207520000&type=3"
+START_URL = "https://www.facebook.com/photo.php?fbid=1240071477683460&set=pb.100050418582886.-2207520000&type=3"
 OUT_DIR = "fb_photos"
 USER_DATA_DIR = "playwright_fb_profile"  # persistent profile folder to keeps login
 

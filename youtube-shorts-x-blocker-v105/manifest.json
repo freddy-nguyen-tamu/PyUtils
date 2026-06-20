@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Shorts Channel X Button",
+  "version": "1.0.5",
+  "description": "Adds an X button to YouTube Shorts that triggers More actions > Don't recommend this channel.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -13,7 +13,7 @@ from selenium.webdriver.chrome.service import Service
 # ================== CONFIGURATION ==================
 TXT_FILE = "ndhang.txt"
 DOWNLOAD_DIR = Path.cwd() / "downloads"
-HEADLESS = True
+HEADLESS = False
 WAIT_TIMEOUT = 30
 DELAY_BETWEEN_VIDEOS = 2
 
