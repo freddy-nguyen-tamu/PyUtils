@@ -22,7 +22,9 @@ except Exception:
 # FOLDER = r"C:\Users\qacer\Downloads\Instagram\for_everyoung10"
 # FOLDER = r"C:\Users\qacer\Downloads\py\fb_photos"
 # FOLDER = r"C:\Users\qacer\Downloads\Instagram"
-FOLDER = r"C:\Users\qacer\Downloads\Instagram\sofiavergara"
+# FOLDER = r"C:\Users\qacer\Downloads\Instagram\sofiavergara"
+FOLDER = r"C:\Users\qacer\Downloads\Instagram"
+# FOLDER = r"C:\Users\qacer\Downloads\py\fb_photos"
 
 IMAGE_EXTS = {
     ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".gif", ".heic", ".heif"
