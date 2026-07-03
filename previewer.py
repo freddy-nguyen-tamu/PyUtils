@@ -23,7 +23,7 @@ except Exception:
 # FOLDER = r"C:\Users\qacer\Downloads\py\fb_photos"
 # FOLDER = r"C:\Users\qacer\Downloads\Instagram"
 # FOLDER = r"C:\Users\qacer\Downloads\Instagram\sofiavergara"
-FOLDER = r"C:\Users\qacer\Downloads\Instagram"
+FOLDER = r"C:\Users\qacer\Downloads\Instagram\mckennagraceful"
 # FOLDER = r"C:\Users\qacer\Downloads\py\fb_photos"
 
 IMAGE_EXTS = {
