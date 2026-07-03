@@ -10,6 +10,7 @@
 #
 # Behavior:
 #   - Reads one IMDb URL per line from 90.txt.
+#   - Skips URLs whose IMDb title id is already listed in done_imdb.txt.
 #   - Uses Firefox Selenium with a persistent profile.
 #   - First tries headless Firefox.
 #   - If IMDb returns AWS WAF / bot challenge, opens visible Firefox.
@@ -17,20 +18,24 @@
 #   - Future runs should reuse selenium_imdb_profile.
 #   - Creates only final PNG files in imdb_output.
 #   - Filename format: [Title] Content.png
+#   - Runs tierlistmaker_limit.py after image creation.
+#   - Adds TierMaker-processed URLs to done_imdb.txt, then removes them from 90.txt.
 #   - Prints progress constantly with flush=True so it does not look frozen.
 
 import argparse
+import csv
 import html
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import browser_cookie3
 import requests
@@ -45,6 +50,8 @@ from selenium.common.exceptions import WebDriverException
 
 DEFAULT_INPUT_FILE = "90.txt"
 DEFAULT_OUTPUT_DIR = "imdb_output"
+DEFAULT_DONE_FILE = "done_imdb.txt"
+TIERLISTMAKER_SCRIPT = "tierlistmaker_limit.py"
 SELENIUM_PROFILE_DIR = "selenium_imdb_profile"
 
 # Optional: set this if browser_cookie3 picks the wrong Firefox profile.
@@ -130,6 +137,46 @@ def read_urls(path: Path) -> List[str]:
 
     log_ok(f"Loaded {len(urls)} URLs")
     return urls
+
+
+def url_done_key(url: str) -> str:
+    try:
+        return extract_tt_id(url)
+    except ValueError:
+        return clean_text(url).lower()
+
+
+def read_done_keys(path: Path) -> Set[str]:
+    if not path.exists():
+        log_warn(f"Done file not found yet: {path}")
+        return set()
+
+    keys = set()
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or not line.startswith("http"):
+            continue
+        keys.add(url_done_key(line))
+
+    log_ok(f"Loaded {len(keys)} done IMDb URLs from {path}")
+    return keys
+
+
+def filter_done_urls(urls: List[str], done_keys: Set[str]) -> Tuple[List[str], int]:
+    pending = []
+    skipped = 0
+
+    for url in urls:
+        if url_done_key(url) in done_keys:
+            skipped += 1
+            log_step(f"Skipping URL already in done_imdb.txt: {url}")
+            continue
+        pending.append(url)
+
+    if skipped:
+        log_ok(f"Skipped {skipped} URLs already listed in done_imdb.txt")
+
+    return pending, skipped
 
 
 def is_waf_html(page_html: str) -> bool:
@@ -1241,7 +1288,7 @@ def output_path_for(output_dir: Path, title: str, content: str) -> Path:
 
 # ----------------------------- main processing -----------------------------
 
-def process_one(driver_holder: Dict[str, object], url: str, output_dir: Path, index: int, total: int) -> bool:
+def process_one(driver_holder: Dict[str, object], url: str, output_dir: Path, index: int, total: int) -> Tuple[bool, Optional[Path]]:
     log("")
     log("=" * 90)
     log(f"[{index}/{total}] START")
@@ -1269,7 +1316,7 @@ def process_one(driver_holder: Dict[str, object], url: str, output_dir: Path, in
 
         log_ok(f"Saved final PNG: {output_path}")
         log(f"[{index}/{total}] DONE")
-        return True
+        return True, output_path
 
     except KeyboardInterrupt:
         raise
@@ -1278,7 +1325,132 @@ def process_one(driver_holder: Dict[str, object], url: str, output_dir: Path, in
         log_fail(url)
         log(f"Reason: {exc}")
         log(f"[{index}/{total}] FAILED")
-        return False
+        return False, None
+
+
+def tierlistmaker_output_dir(source_folder: Path) -> Path:
+    return source_folder.with_name(source_folder.name + "_tiermaker_small")
+
+
+def run_tierlistmaker_limit(source_folder: Path) -> Path:
+    script_path = Path(__file__).with_name(TIERLISTMAKER_SCRIPT).resolve()
+    if not script_path.exists():
+        raise FileNotFoundError(f"TierMaker script not found: {script_path}")
+
+    command = [sys.executable, str(script_path), str(source_folder)]
+    log("")
+    log_step(f"Running {TIERLISTMAKER_SCRIPT}")
+    log(f"Command: {subprocess.list2cmdline(command)}")
+
+    completed = subprocess.run(command, cwd=str(script_path.parent))
+    if completed.returncode != 0:
+        raise RuntimeError(f"{TIERLISTMAKER_SCRIPT} exited with code {completed.returncode}")
+
+    report_path = tierlistmaker_output_dir(source_folder) / "compression_report.csv"
+    log_ok(f"{TIERLISTMAKER_SCRIPT} finished")
+    return report_path
+
+
+def read_tierlistmaker_processed_names(report_path: Path) -> Set[str]:
+    if not report_path.exists():
+        log_warn(f"TierMaker report not found: {report_path}")
+        return set()
+
+    processed_names = set()
+    with report_path.open("r", newline="", encoding="utf-8", errors="replace") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            original_file = clean_text(row.get("original_file", ""))
+            if original_file:
+                processed_names.add(original_file)
+
+    log_ok(f"TierMaker report lists {len(processed_names)} processed source images")
+    return processed_names
+
+
+def unique_urls_by_done_key(urls: List[str]) -> List[str]:
+    unique = []
+    seen = set()
+
+    for url in urls:
+        key = url_done_key(url)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(url)
+
+    return unique
+
+
+def append_done_then_remove_from_input(input_path: Path, done_path: Path, urls: List[str]) -> Tuple[int, int]:
+    urls = unique_urls_by_done_key(urls)
+    if not urls:
+        log_warn("No processed URLs to move into done_imdb.txt")
+        return 0, 0
+
+    existing_done_keys = read_done_keys(done_path)
+    urls_to_append = [url for url in urls if url_done_key(url) not in existing_done_keys]
+
+    if urls_to_append:
+        existing_text = done_path.read_text(encoding="utf-8", errors="replace") if done_path.exists() else ""
+        needs_separator = bool(existing_text and not existing_text.endswith(("\n", "\r")))
+
+        with done_path.open("a", encoding="utf-8") as f:
+            if needs_separator:
+                f.write("\n")
+            for url in urls_to_append:
+                f.write(f"{url}\n")
+
+        log_ok(f"Added {len(urls_to_append)} URLs to {done_path}")
+    else:
+        log_ok("All processed URLs were already present in done_imdb.txt")
+
+    move_keys = {url_done_key(url) for url in urls}
+    original_lines = input_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    kept_lines = []
+    removed = 0
+
+    for line in original_lines:
+        stripped = line.strip()
+        if stripped.startswith("http") and url_done_key(stripped) in move_keys:
+            removed += 1
+            continue
+        kept_lines.append(line)
+
+    new_text = "\n".join(kept_lines)
+    if new_text:
+        new_text += "\n"
+    input_path.write_text(new_text, encoding="utf-8")
+
+    log_ok(f"Removed {removed} URLs from {input_path}")
+    return len(urls_to_append), removed
+
+
+def move_tierlistmaker_processed_urls(
+    input_path: Path,
+    done_path: Path,
+    output_dir: Path,
+    completed_outputs: List[Tuple[str, Path]],
+) -> int:
+    if not completed_outputs:
+        log_warn(f"No new IMDb images were saved, so {TIERLISTMAKER_SCRIPT} was not run")
+        return 0
+
+    report_path = run_tierlistmaker_limit(output_dir)
+    processed_names = read_tierlistmaker_processed_names(report_path)
+
+    processed_urls = [
+        url
+        for url, output_path in completed_outputs
+        if output_path.name in processed_names
+    ]
+
+    missing_count = len(completed_outputs) - len(processed_urls)
+    if missing_count:
+        log_warn(f"{missing_count} newly saved images did not appear in the TierMaker report")
+
+    append_done_then_remove_from_input(input_path, done_path, processed_urls)
+    return len(processed_urls)
 
 
 def main() -> int:
@@ -1315,21 +1487,29 @@ def main() -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    urls = read_urls(input_path)
+    done_path = input_path.with_name(DEFAULT_DONE_FILE)
+    all_urls = read_urls(input_path)
+    done_keys = read_done_keys(done_path)
+    urls, skipped_done_count = filter_done_urls(all_urls, done_keys)
 
     log(f"Input file   : {input_path}")
-    log(f"URLs found   : {len(urls)}")
+    log(f"URLs found   : {len(all_urls)}")
+    log(f"Already done : {skipped_done_count}")
+    log(f"Pending URLs : {len(urls)}")
+    log(f"Done file    : {done_path}")
     log(f"Output folder: {output_dir}")
     log(f"Delay        : {args.delay}s")
 
     if not urls:
-        log_fail("No URLs found")
-        return 1
+        log_ok("No pending URLs found")
+        return 0
 
     driver = None
     driver_holder = None
     ok_count = 0
     fail_count = 0
+    tierlistmaker_failed = False
+    completed_outputs: List[Tuple[str, Path]] = []
 
     try:
         driver, visible = get_ready_driver(urls[0])
@@ -1339,10 +1519,12 @@ def main() -> int:
         log(f"Browser visible mode: {visible}")
 
         for index, url in enumerate(urls, start=1):
-            ok = process_one(driver_holder, url, output_dir, index, len(urls))
+            ok, output_path = process_one(driver_holder, url, output_dir, index, len(urls))
 
             if ok:
                 ok_count += 1
+                if output_path is not None:
+                    completed_outputs.append((url, output_path))
             else:
                 fail_count += 1
 
@@ -1374,13 +1556,21 @@ def main() -> int:
             except Exception as exc:
                 log_warn(f"Could not close Firefox cleanly: {exc}")
 
+    try:
+        moved_count = move_tierlistmaker_processed_urls(input_path, done_path, output_dir, completed_outputs)
+        log_ok(f"URLs confirmed by TierMaker processing: {moved_count}")
+    except Exception as exc:
+        tierlistmaker_failed = True
+        log_fail(f"Post-processing failed: {exc}")
+
     log("")
     log("Done.")
     log(f"Successful    : {ok_count}")
     log(f"Failed        : {fail_count}")
+    log(f"TierMaker ok  : {not tierlistmaker_failed}")
     log(f"Output folder : {output_dir}")
 
-    return 0 if fail_count == 0 else 2
+    return 0 if fail_count == 0 and not tierlistmaker_failed else 2
 
 
 if __name__ == "__main__":
