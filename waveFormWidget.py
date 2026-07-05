@@ -1,20 +1,33 @@
 #!/usr/bin/env python3
-"""
-MP3 Trimmer – final version
-- Triangle handles point according to mode
-- Comfortable waveform margins
-- No button focus (space always toggles play)
-- Arrow keys fine‑tune handle position (±0.05 s) when handle is selected
-- Fast in‑memory preview (no ffmpeg during editing)
+r"""
+MP3 Trimmer - final version
+  - Triangle handles point according to mode (always visible at edges)
+  - Comfortable waveform margins
+  - No button focus (space always toggles play)
+  - Arrow keys fine-tune handle position (+-0.05 s) when handle is selected
+  - Fast in-memory preview (no ffmpeg during editing)
+  - Open/Save default to the user's finished folder
+  - Save default name: original (index+1) auto-increment
+  - Preserves title, artist and lyrics from original MP3
 """
 
 import sys
 import os
+import re
 import tempfile
 import subprocess
+import struct
 import wave
 import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets, QtMultimedia
+
+# Try to import mutagen for metadata copying
+try:
+    from mutagen.mp3 import MP3
+    from mutagen.id3 import ID3, TIT2, TPE1, USLT
+    HAS_MUTAGEN = True
+except ImportError:
+    HAS_MUTAGEN = False
 
 
 # ----------------------------------------------------------------------
@@ -74,6 +87,27 @@ def get_waveform_peaks(samples, target_width):
 # ----------------------------------------------------------------------
 # Fast preview audio creation (pure numpy slicing)
 # ----------------------------------------------------------------------
+def write_wav_fast(path, samples, sr):
+    """
+    Write a mono 16-bit WAV file with a single header pack + two writes.
+    Much lower overhead than the 'wave' module when called repeatedly
+    during interactive scrubbing/dragging.
+    """
+    data_bytes = np.ascontiguousarray(samples, dtype=np.int16).tobytes()
+    data_size = len(data_bytes)
+    byte_rate = sr * 2      # 16-bit mono
+    block_align = 2
+    header = struct.pack(
+        '<4sI4s4sIHHIIHH4sI',
+        b'RIFF', 36 + data_size, b'WAVE',
+        b'fmt ', 16, 1, 1, sr, byte_rate, block_align, 16,
+        b'data', data_size
+    )
+    with open(path, 'wb') as f:
+        f.write(header)
+        f.write(data_bytes)
+
+
 def create_preview_wav(samples, sr, start_sec, end_sec, keep, out_path):
     """
     samples : 1D int16 numpy array (original mono audio)
@@ -91,11 +125,7 @@ def create_preview_wav(samples, sr, start_sec, end_sec, keep, out_path):
     else:
         cut = np.concatenate((samples[:start_idx], samples[end_idx:]))
 
-    with wave.open(out_path, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)          # 16‑bit
-        wf.setframerate(sr)
-        wf.writeframes(cut.tobytes())
+    write_wav_fast(out_path, cut, sr)
 
 
 # ----------------------------------------------------------------------
@@ -229,15 +259,19 @@ class WaveformWidget(QtWidgets.QWidget):
         # Parabolic handles (rounded "leaf" shape instead of a sharp triangle)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
         painter.setPen(QtCore.Qt.NoPen)
-        handle_color = QtGui.QColor(255, 20, 147, 235)   # vivid pink/magenta – stands out from the blue waveform
+        handle_color = QtGui.QColor(255, 20, 147, 235)   # vivid pink/magenta
 
-        # Left handle
+        # Left handle: choose direction that keeps it fully visible
+        left_dir = -1 if self.keep_mode else 1
+        if left_x < self.handle_extend:
+            left_dir = 1   # bulge to the right when too close to left edge
         painter.setBrush(handle_color)
-        left_dir = -1 if self.keep_mode else 1     # points left in keep mode, right in remove mode
         painter.drawPath(self._handle_path(left_x, h, left_dir))
 
-        # Right handle
-        right_dir = 1 if self.keep_mode else -1    # points right in keep mode, left in remove mode
+        # Right handle: choose direction that keeps it fully visible
+        right_dir = 1 if self.keep_mode else -1
+        if right_x > w - self.handle_extend:
+            right_dir = -1   # bulge to the left when too close to right edge
         painter.drawPath(self._handle_path(right_x, h, right_dir))
         painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
 
@@ -329,12 +363,14 @@ class WaveformWidget(QtWidgets.QWidget):
 class MP3Trimmer(QtWidgets.QMainWindow):
     FINE_STEP = 0.05                 # seconds per arrow key
 
+    # Default folder for Open/Save (user's request)
+    DEFAULT_DIR = r"C:\Users\qacer\Downloads\ytb\laptop\finished"
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MP3 Trimmer")
 
-        # Size the window relative to the available screen so the whole
-        # workspace can be centered nicely instead of stretching edge to edge.
+        # Size the window relative to the available screen
         screen = QtWidgets.QApplication.primaryScreen().availableGeometry()
         win_w = int(screen.width() * 0.6)
         win_h = int(screen.height() * 0.75)
@@ -351,6 +387,8 @@ class MP3Trimmer(QtWidgets.QMainWindow):
 
         self.original_file = ""
         self.temp_preview_wav = None
+        self.temp_playback_wav = None
+        self._playback_offset = None
         self.cached_left = -1.0
         self.cached_right = -1.0
         self.cached_keep = True
@@ -365,6 +403,9 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         self._init_ui()
         self._check_ffmpeg()
 
+        if not HAS_MUTAGEN:
+            print("Info: mutagen not found – original MP3 metadata won't be copied on save.")
+
     def _check_ffmpeg(self):
         try:
             subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
@@ -377,9 +418,6 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
         central.setStyleSheet("background: #0D233A; color: white; font-family: Segoe UI;")
 
-        # Outer layout: stretch / content / stretch so the workspace sits
-        # vertically centered and only occupies roughly two thirds of the
-        # window's height, instead of filling it edge to edge.
         outer_layout = QtWidgets.QVBoxLayout(central)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
@@ -390,7 +428,7 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         layout.setSpacing(4)
 
         outer_layout.addStretch(1)
-        outer_layout.addWidget(content, 4)   # 4 / (1+4+1) = 2/3 of the height
+        outer_layout.addWidget(content, 4)
         outer_layout.addStretch(1)
 
         # ---------- Top row ----------
@@ -434,7 +472,7 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         top.addWidget(btn_save)
         layout.addLayout(top)
 
-        # ---------- Waveform (with horizontal margins) ----------
+        # ---------- Waveform ----------
         self.waveform = WaveformWidget()
         self.waveform.leftHandleMoved.connect(lambda t: self.edit_left.setText(format_time(t)))
         self.waveform.rightHandleMoved.connect(lambda t: self.edit_right.setText(format_time(t)))
@@ -446,13 +484,8 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         wave_container = QtWidgets.QWidget()
         wave_container.setStyleSheet("background: transparent;")
         wave_layout = QtWidgets.QHBoxLayout(wave_container)
-        # Noticeable margins on either side so the waveform doesn't touch
-        # the edges of the window, while still using most of the width.
         wave_layout.setContentsMargins(60, 0, 60, 0)
         wave_layout.addWidget(self.waveform)
-        # Stretch factor of 1 lets the waveform grow to fill most of the
-        # leftover vertical space, while the small spacing added below
-        # keeps a bit of breathing room from the button rows.
         layout.addSpacing(14)
         layout.addWidget(wave_container, 1)
         layout.addSpacing(14)
@@ -497,22 +530,20 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         bottom.addStretch()
         layout.addLayout(bottom)
 
-        self.setFocusPolicy(QtCore.Qt.StrongFocus)   # main window handles space
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)
 
     # ------------------------------------------------------------------
     # Keyboard: space toggles play, arrows fine‑tune active handle
     # ------------------------------------------------------------------
     def keyPressEvent(self, event):
-        # Space – only if no text field is focused
         if event.key() == QtCore.Qt.Key_Space and not event.isAutoRepeat():
             if not isinstance(self.focusWidget(), QtWidgets.QLineEdit):
                 self.toggle_play()
                 return
 
-        # Arrow keys – fine‑tune the selected handle
         if event.key() in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Right) and self.active_handle is not None:
             if isinstance(self.focusWidget(), QtWidgets.QLineEdit):
-                return   # don't steal from time edits
+                return
             delta = -self.FINE_STEP if event.key() == QtCore.Qt.Key_Left else self.FINE_STEP
             self._nudge_handle(self.active_handle, delta)
             return
@@ -520,24 +551,20 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         super().keyPressEvent(event)
 
     def _nudge_handle(self, handle, delta):
-        """Move the given handle by delta seconds, respecting limits."""
         if self.audio_samples is None:
             return
         if handle == 'left':
             new_time = max(0.0, self.waveform.left_frac * self.duration + delta)
             new_time = min(new_time, self.waveform.right_frac * self.duration - 0.001)
             self.waveform.set_left_time(new_time)
-        else:   # 'right'
+        else:
             new_time = max(self.waveform.left_frac * self.duration + 0.001,
                            self.waveform.right_frac * self.duration + delta)
             new_time = min(new_time, self.duration)
             self.waveform.set_right_time(new_time)
-
-        # After moving, apply the same cursor logic as when the drag finishes
         self._apply_handle_drag_logic(handle)
 
     def _apply_handle_drag_logic(self, handle):
-        """Recalculate cursor position after a handle move and restart playback if needed."""
         if self.audio_samples is None:
             return
         keep = self.btn_keep.isChecked()
@@ -548,11 +575,8 @@ class MP3Trimmer(QtWidgets.QMainWindow):
             if keep:
                 new_cursor = left
             else:
-                if left < 0.001:
-                    new_cursor = right
-                else:
-                    new_cursor = max(0.0, left - 3.0)
-        else:   # 'right'
+                new_cursor = right if left < 0.001 else max(0.0, left - 3.0)
+        else:
             if keep:
                 cur = self.waveform.cursor_frac * self.duration
                 new_cursor = min(cur, right)
@@ -589,7 +613,10 @@ class MP3Trimmer(QtWidgets.QMainWindow):
     # File loading
     # ------------------------------------------------------------------
     def open_file(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open MP3", "", "MP3 files (*.mp3);;All files (*)")
+        start_dir = self.DEFAULT_DIR if os.path.isdir(self.DEFAULT_DIR) else ""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Open MP3", start_dir, "MP3 files (*.mp3);;All files (*)"
+        )
         if not path:
             return
         try:
@@ -620,9 +647,6 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Could not load MP3:\n{e}")
 
-    # ------------------------------------------------------------------
-    # Reset
-    # ------------------------------------------------------------------
     def reset_trim(self):
         if self.audio_samples is None:
             return
@@ -631,50 +655,90 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         self.waveform.set_cursor_time(0.0)
         self.stop()
 
-    # ------------------------------------------------------------------
-    # Waveform click → seek during playback
-    # ------------------------------------------------------------------
     def on_waveform_clicked(self, orig_time):
         if self.media_player.state() == QtMultimedia.QMediaPlayer.PlayingState:
-            temp_time = self._original_to_temp_time(orig_time)
-            self.media_player.setPosition(int(temp_time * 1000))
+            self.restart_playback()
 
-    # ------------------------------------------------------------------
-    # Handle drag finished (same logic as above)
-    # ------------------------------------------------------------------
     def on_handle_drag_finished(self, handle):
         if self.audio_samples is None:
             return
-        # cursor update and playback restart
         self._apply_handle_drag_logic(handle)
 
     # ------------------------------------------------------------------
-    # Playback restart using fast in‑memory preview
+    # Playback restart
     # ------------------------------------------------------------------
     def restart_playback(self):
         self.media_player.stop()
         if self.audio_samples is None:
             return
-        preview_path = self._get_preview_wav_path()
-        if not preview_path:
-            return
         orig_time = self.waveform.cursor_frac * self.duration
-        temp_time = self._original_to_temp_time(orig_time)
+        seg, offset_info = self._build_playback_segment(orig_time)
+        if seg is None or len(seg) == 0:
+            return
+
+        if self.temp_playback_wav and os.path.exists(self.temp_playback_wav):
+            try:
+                os.unlink(self.temp_playback_wav)
+            except OSError:
+                pass
+        fd, path = tempfile.mkstemp(suffix='.wav')
+        os.close(fd)
+        try:
+            write_wav_fast(path, seg, self.audio_rate)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Preview generation failed:\n{e}")
+            return
+        self.temp_playback_wav = path
+        self._playback_offset = offset_info
+
         self.media_player.setMedia(
-            QtMultimedia.QMediaContent(QtCore.QUrl.fromLocalFile(preview_path))
+            QtMultimedia.QMediaContent(QtCore.QUrl.fromLocalFile(path))
         )
         self._pending_seek = True
-        self._pending_seek_temp_time = temp_time
         self.media_player.mediaStatusChanged.connect(self._on_media_loaded_restart)
 
     def _on_media_loaded_restart(self, status):
         if status == QtMultimedia.QMediaPlayer.LoadedMedia and getattr(self, '_pending_seek', False):
             self._pending_seek = False
             self.media_player.mediaStatusChanged.disconnect(self._on_media_loaded_restart)
-            self.media_player.setPosition(int(self._pending_seek_temp_time * 1000))
             self.media_player.play()
             self.is_playing = True
             self.update_play_button()
+
+    def _build_playback_segment(self, orig_time):
+        """Return only the samples needed to play from orig_time onward."""
+        if self.audio_samples is None or self.duration <= 0:
+            return None, None
+        sr = self.audio_rate
+        total = len(self.audio_samples)
+        left = self.waveform.left_frac * self.duration
+        right = self.waveform.right_frac * self.duration
+        keep = self.btn_keep.isChecked()
+
+        if keep:
+            start_idx = int(max(orig_time, left) * sr)
+            end_idx = int(right * sr)
+            start_idx = max(0, min(start_idx, total))
+            end_idx = max(start_idx, min(end_idx, total))
+            seg = self.audio_samples[start_idx:end_idx]
+            info = {'keep': True, 'offset': start_idx / sr}
+        else:
+            left_idx = max(0, min(int(left * sr), total))
+            right_idx = max(left_idx, min(int(right * sr), total))
+            if orig_time < left:
+                start_idx = max(0, min(int(orig_time * sr), left_idx))
+                part1 = self.audio_samples[start_idx:left_idx]
+                part2 = self.audio_samples[right_idx:]
+                seg = np.concatenate((part1, part2)) if len(part2) else part1
+                info = {'keep': False, 'offset': start_idx / sr,
+                        'part1_len_sec': len(part1) / sr, 'right': right}
+            else:
+                # Continuous tail after right handle – no jump
+                start_idx = max(right_idx, min(int(orig_time * sr), total))
+                seg = self.audio_samples[start_idx:]
+                info = {'keep': False, 'offset': start_idx / sr,
+                        'part1_len_sec': 0.0, 'right': None}
+        return seg, info
 
     def _get_preview_wav_path(self):
         left = self.waveform.left_frac * self.duration
@@ -698,33 +762,6 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         self.temp_preview_wav = path
         self.cached_left, self.cached_right, self.cached_keep = left, right, keep
         return path
-
-    # ------------------------------------------------------------------
-    # Time mapping
-    # ------------------------------------------------------------------
-    def _original_to_temp_time(self, orig):
-        left = self.waveform.left_frac * self.duration
-        right = self.waveform.right_frac * self.duration
-        keep = self.btn_keep.isChecked()
-        if keep:
-            return max(0.0, min(orig - left, right - left))
-        else:
-            if orig < left:
-                return orig
-            if orig >= right:
-                return orig - (right - left)
-            return left
-
-    def _temp_to_original_time(self, temp):
-        left = self.waveform.left_frac * self.duration
-        right = self.waveform.right_frac * self.duration
-        keep = self.btn_keep.isChecked()
-        if keep:
-            return left + temp
-        else:
-            if temp < left:
-                return temp
-            return temp + (right - left)
 
     # ------------------------------------------------------------------
     # Play / Pause / Stop
@@ -752,11 +789,24 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         self.btn_play.setText("⏸" if self.is_playing else "▶")
 
     def on_playback_position(self, pos_ms):
-        if self.duration == 0:
+        if self.duration == 0 or self._playback_offset is None:
             return
         temp = pos_ms / 1000.0
-        orig = self._temp_to_original_time(temp)
-        self.waveform.cursor_frac = orig / self.duration
+        info = self._playback_offset
+        if info['keep']:
+            orig = info['offset'] + temp
+        else:
+            # Remove mode – two possible mappings
+            if info['right'] is None:
+                # Continuous tail after the right handle
+                orig = info['offset'] + temp
+            else:
+                # Jump over the removed section
+                if temp <= info['part1_len_sec']:
+                    orig = info['offset'] + temp
+                else:
+                    orig = info['right'] + (temp - info['part1_len_sec'])
+        self.waveform.cursor_frac = max(0.0, min(orig / self.duration, 1.0))
         self.waveform.update()
         if pos_ms >= self.media_player.duration() > 0:
             self.is_playing = False
@@ -785,12 +835,33 @@ class MP3Trimmer(QtWidgets.QMainWindow):
             return None
 
     # ------------------------------------------------------------------
+    # Default filename helper
+    # ------------------------------------------------------------------
+    def _default_save_name(self):
+        """Return a suggested file name based on original file."""
+        if not self.original_file:
+            return "trimmed.mp3"
+        base = os.path.splitext(os.path.basename(self.original_file))[0]
+        match = re.search(r'\s*\((\d+)\)\s*$', base)
+        if match:
+            idx = int(match.group(1))
+            new_base = base[:match.start()] + f"({idx + 1})"
+        else:
+            new_base = base + "(1)"
+        return new_base + ".mp3"
+
+    # ------------------------------------------------------------------
     # Save
     # ------------------------------------------------------------------
     def save_file(self):
         if self.audio_samples is None:
             return
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save", "", "MP3 (*.mp3)")
+        start_dir = self.DEFAULT_DIR if os.path.isdir(self.DEFAULT_DIR) else ""
+        default_name = self._default_save_name()
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save", os.path.join(start_dir, default_name),
+            "MP3 (*.mp3)"
+        )
         if not path:
             return
         preview = self._get_preview_wav_path()
@@ -798,6 +869,25 @@ class MP3Trimmer(QtWidgets.QMainWindow):
             return
         try:
             run_ffmpeg(['-i', preview, '-codec:a', 'libmp3lame', '-qscale:a', '2', path, '-y'])
+
+            if HAS_MUTAGEN and self.original_file.lower().endswith('.mp3'):
+                try:
+                    orig_tags = ID3(self.original_file)
+                    title = orig_tags.get('TIT2')
+                    artist = orig_tags.get('TPE1')
+                    lyrics = orig_tags.get('USLT')
+                    if title or artist or lyrics:
+                        out_audio = MP3(path, ID3=ID3)
+                        if title:
+                            out_audio.tags.add(title)
+                        if artist:
+                            out_audio.tags.add(artist)
+                        if lyrics:
+                            out_audio.tags.add(lyrics)
+                        out_audio.save()
+                except Exception as meta_err:
+                    print(f"Could not copy metadata: {meta_err}")
+
             self.statusBar().showMessage("Saved", 3000)
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Save failed:\n{e}")
@@ -806,6 +896,8 @@ class MP3Trimmer(QtWidgets.QMainWindow):
         self.media_player.stop()
         if self.temp_preview_wav and os.path.exists(self.temp_preview_wav):
             os.unlink(self.temp_preview_wav)
+        if self.temp_playback_wav and os.path.exists(self.temp_playback_wav):
+            os.unlink(self.temp_playback_wav)
         super().closeEvent(event)
 
 
