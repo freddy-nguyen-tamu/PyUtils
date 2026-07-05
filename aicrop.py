@@ -18,39 +18,66 @@ def is_image_file(p: Path) -> bool:
     return p.suffix.lower() in IMAGE_EXTS
 
 
+def is_cropped_stem(stem: str) -> bool:
+    return stem.lower().endswith("_cropped")
+
+
+def uncropped_stem(stem: str) -> str:
+    if is_cropped_stem(stem):
+        return stem[:-len("_cropped")]
+    return stem
+
+
+def build_destination_stem_set(output_dir: Path) -> set[str]:
+    """
+    Reads the destination folder only.
+
+    Example:
+      image_cropped.jpg
+      image_cropped.webp
+      image_cropped.png
+
+    All become:
+      image_cropped
+    """
+    stems = set()
+
+    if not output_dir.exists():
+        return stems
+
+    for p in output_dir.iterdir():
+        if p.is_file() and is_image_file(p):
+            stems.add(p.stem.lower())
+
+    return stems
+
+
 def get_person_y_bounds_from_seg(
     model: YOLO, img_source: Union[str, Path, np.ndarray], conf: float = 0.25
 ) -> Optional[Tuple[int, int]]:
-    """
-    Returns (y_min, y_max) for all detected persons combined.
-    Uses segmentation masks if available; falls back to boxes if needed.
-
-    img_source can be:
-      - path (str/Path), OR
-      - numpy array image (H,W,3) in RGB/BGR (Ultralytics will handle it)
-    """
     results = model.predict(source=img_source, conf=conf, verbose=False)
     if not results:
         return None
 
     r = results[0]
 
-    PERSON_CLASS_ID = 0  # COCO class id for "person"
+    PERSON_CLASS_ID = 0
 
     ymins = []
     ymaxs = []
 
-    # Prefer masks
     if r.masks is not None and r.boxes is not None:
         boxes = r.boxes
         masks = r.masks
 
         for i in range(len(boxes)):
             cls_id = int(boxes.cls[i].item()) if hasattr(boxes.cls[i], "item") else int(boxes.cls[i])
+
             if cls_id != PERSON_CLASS_ID:
                 continue
 
             poly = masks.xy[i]
+
             if poly is None or len(poly) == 0:
                 continue
 
@@ -58,11 +85,12 @@ def get_person_y_bounds_from_seg(
             ymins.append(int(min(ys)))
             ymaxs.append(int(max(ys)))
 
-    # Fallback to boxes
     if (not ymins or not ymaxs) and r.boxes is not None:
         boxes = r.boxes
+
         for i in range(len(boxes)):
             cls_id = int(boxes.cls[i].item()) if hasattr(boxes.cls[i], "item") else int(boxes.cls[i])
+
             if cls_id != PERSON_CLASS_ID:
                 continue
 
@@ -79,10 +107,6 @@ def get_person_y_bounds_from_seg(
 def vertical_crop_keep_width(
     img: Image.Image, y_min: int, y_max: int, pad_ratio: float = 0.08
 ) -> Image.Image:
-    """
-    Crops only vertically. Width stays the same.
-    Adds a little top/bottom padding based on person height.
-    """
     w, h = img.size
 
     y_min = clamp(y_min, 0, h - 1)
@@ -108,9 +132,13 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     failed_dir.mkdir(parents=True, exist_ok=True)
 
+    dest_stems = build_destination_stem_set(output_dir)
+
     model = YOLO("yolov8s-seg.pt")
 
     skipped_non_images = 0
+    skipped_existing = 0
+    skipped_already_cropped_input = 0
     skipped_no_person = 0
     processed = 0
     copied_failed = 0
@@ -123,6 +151,24 @@ def main():
             skipped_non_images += 1
             continue
 
+        base_stem = uncropped_stem(p.stem)
+        expected_cropped_stem = f"{base_stem}_cropped"
+        out_path = output_dir / f"{expected_cropped_stem}.jpg"
+
+        # Skip files that are already cropped in the source folder.
+        # This prevents image_cropped.webp -> image_cropped_cropped.jpg.
+        if is_cropped_stem(p.stem):
+            skipped_already_cropped_input += 1
+            print(f"[SKIP] Source file already looks cropped: {p.name}")
+            continue
+
+        # Skip by checking destination folder only.
+        # This works even if the existing cropped file is .jpg, .png, .webp, etc.
+        if expected_cropped_stem.lower() in dest_stems:
+            skipped_existing += 1
+            print(f"[SKIP] Already exists in destination: {expected_cropped_stem}.*")
+            continue
+
         try:
             img = Image.open(p)
             img = ImageOps.exif_transpose(img).convert("RGB")
@@ -133,10 +179,16 @@ def main():
         img_np = np.array(img)
 
         bounds = get_person_y_bounds_from_seg(model, img_np, conf=0.25)
+
         if bounds is None:
             skipped_no_person += 1
 
             failed_copy_path = failed_dir / p.name
+
+            if failed_copy_path.exists():
+                print(f"[SKIP] No-person copy already exists: {failed_copy_path.name}")
+                continue
+
             try:
                 shutil.copy2(p, failed_copy_path)
                 copied_failed += 1
@@ -149,15 +201,20 @@ def main():
         y_min, y_max = bounds
         cropped = vertical_crop_keep_width(img, y_min, y_max, pad_ratio=0.10)
 
-        out_path = output_dir / (p.stem + "_cropped.jpg")
         cropped.save(out_path, quality=95)
+
+        # Update destination cache so duplicate stems later in the same run also skip.
+        dest_stems.add(out_path.stem.lower())
+
         processed += 1
         print(f"[OK] {p.name} -> {out_path.name}")
 
     print("\n=== Done ===")
     print(f"Processed: {processed}")
-    print(f"Skipped (non-images): {skipped_non_images}")
-    print(f"Skipped (no person detected): {skipped_no_person}")
+    print(f"Skipped already in destination: {skipped_existing}")
+    print(f"Skipped already-cropped source files: {skipped_already_cropped_input}")
+    print(f"Skipped non-images: {skipped_non_images}")
+    print(f"Skipped no person detected: {skipped_no_person}")
     print(f"Copied failed detections: {copied_failed}")
     print(f"Output folder: {output_dir}")
     print(f"Failed-copy folder: {failed_dir}")
