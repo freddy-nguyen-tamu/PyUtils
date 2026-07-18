@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Instagram Following Only</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand-mark" aria-hidden="true">FO</div>
+      <div>
+        <h1>Following Only</h1>
+        <p>Filter Instagram’s feed and Reels.</p>
+      </div>
+    </header>
+
+    <section class="panel">
+      <label class="row primary">
+        <span>
+          <strong>Enable filtering</strong>
+          <small>Master switch</small>
+        </span>
+        <input id="enabled" type="checkbox">
+      </label>
+
+      <label class="row">
+        <span>
+          <strong>Home feed</strong>
+          <small>Hide non-followed posts</small>
+        </span>
+        <input id="hideFeed" type="checkbox">
+      </label>
+
+      <label class="row">
+        <span>
+          <strong>Reels</strong>
+          <small>Hide non-followed Reels</small>
+        </span>
+        <input id="hideReels" type="checkbox">
+      </label>
+
+      <label class="field">
+        <span>
+          <strong>Detection</strong>
+          <small>Balanced is recommended</small>
+        </span>
+        <select id="detectionMode">
+          <option value="conservative">Conservative — Follow button only</option>
+          <option value="balanced">Balanced — Follow + suggested labels</option>
+          <option value="aggressive">Aggressive — also sponsored/recommended</option>
+        </select>
+      </label>
+
+      <label class="row">
+        <span>
+          <strong>Show placeholders</strong>
+          <small>Add a “Show once” button</small>
+        </span>
+        <input id="showPlaceholders" type="checkbox">
+      </label>
+    </section>
+
+    <p id="status" role="status" aria-live="polite">Settings apply immediately.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

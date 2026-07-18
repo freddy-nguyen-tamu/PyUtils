@@ -97,3 +97,25 @@ toongod-scroll-fix/
 wavestack-normal-firefox-profile/
 fb_photos/
 selenium_fb_profile/
+downloads/
+imdb_output/
+imdb_output_*/
+selenium_*_profile/
+debug_*
+*.mp3
+*.mp4
+*.jpg
+*.jpeg
+*.png
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.bin
+*.lz4
+*.jsonlz4
+*compression_report.csv
+
+# Keep source-project icon assets
+!**/icons/
+!**/icons/**

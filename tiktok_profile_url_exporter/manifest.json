@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "TikTok Profile URL Exporter",
+  "version": "1.0.0",
+  "description": "Scrolls a TikTok profile, extracts video/photo URLs, and downloads them as py/ndhang.txt.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://www.tiktok.com/*",
+    "https://tiktok.com/*"
+  ],
+  "action": {
+    "default_title": "Export TikTok URLs",
+    "default_popup": "popup.html"
+  }
+}

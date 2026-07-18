@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Rotation Tool</title>
+    <style>
+        :root {
+            --bg: #1e1e2e;
+            --surface: #282840;
+            --surface-light: #323255;
+            --text: #e0e0f0;
+            --text-secondary: #b0b0c8;
+            --accent: #6c8cff;
+            --accent-hover: #8aa4ff;
+            --accent-glow: rgba(108, 140, 255, 0.3);
+            --handle-color: #ff6b8a;
+            --handle-glow: rgba(255, 107, 138, 0.5);
+            --border: #3a3a55;
+            --radius: 14px;
+            --transition: 0.2s ease;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: var(--text);
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            padding: 20px;
+        }
+
+        .app-container {
+            background: var(--surface);
+            border-radius: 20px;
+            padding: 28px 32px 24px;
+            box-shadow:
+                0 20px 60px rgba(0, 0, 0, 0.5),
+                0 0 0 1px var(--border),
+                0 0 120px rgba(108, 140, 255, 0.06);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            max-width: 95vw;
+        }
+
+        .app-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            justify-content: center;
+        }
+        .app-header .icon {
+            width: 32px;
+            height: 32px;
+            background: var(--accent);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+        .app-header h1 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+            color: var(--text);
+        }
+
+        /* Canvas wrapper */
+        .canvas-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: var(--radius);
+            background:
+                repeating-conic-gradient(#3a3a50 0% 25%, transparent 0% 50%) 50% / 20px 20px;
+            box-shadow: inset 0 0 0 1px var(--border), 0 8px 32px rgba(0, 0, 0, 0.4);
+            cursor: default;
+            transition: box-shadow var(--transition);
+            /* min size */;
+        }
+        .canvas-wrapper.has-image {
+            /* keeps it tight to canvas */;
+        }
+        .canvas-wrapper.dragging {
+            cursor: grabbing;
+        }
+
+        canvas {
+            display: block;
+            border-radius: var(--radius);
+            pointer-events: none;
+            /* let wrapper handle clicks */;
+        }
+
+        /* Rotation Handle */
+        .rotation-handle {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 35% 35%, #ff8da6, #e85570);
+            border: 3px solid #fff;
+            box-shadow:
+                0 0 0 4px var(--handle-glow),
+                0 6px 20px rgba(0, 0, 0, 0.5),
+                inset 0 2px 4px rgba(255, 255, 255, 0.3);
+            cursor: grab;
+            z-index: 10;
+            transform: translate(-50%, -50%);
+            transition: box-shadow 0.15s ease, transform 0.05s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+        }
+        .rotation-handle::after {
+            content: '';
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+            pointer-events: none;
+        }
+        .rotation-handle:hover {
+            box-shadow:
+                0 0 0 8px var(--handle-glow),
+                0 8px 28px rgba(0, 0, 0, 0.55),
+                inset 0 2px 4px rgba(255, 255, 255, 0.35);
+            transform: translate(-50%, -50%) scale(1.1);
+        }
+        .rotation-handle:active,
+        .rotation-handle.dragging {
+            cursor: grabbing;
+            box-shadow:
+                0 0 0 12px var(--handle-glow),
+                0 4px 16px rgba(0, 0, 0, 0.6),
+                inset 0 1px 3px rgba(255, 255, 255, 0.25);
+            transform: translate(-50%, -50%) scale(1.05);
+            transition: box-shadow 0.08s ease, transform 0.04s ease;
+        }
+        .rotation-handle.no-transition {
+            transition: none !important;
+        }
+
+        /* Guide ring on canvas (subtle dashed circle) */
+        .canvas-wrapper::before {
+            content: '';
+            position: absolute;
+            border-radius: 50%;
+            border: 1.5px dashed rgba(255, 255, 255, 0.12);
+            pointer-events: none;
+            z-index: 2;
+            display: none;
+        }
+        .canvas-wrapper.has-image::before {
+            display: block;
+        }
+
+        /* Snap indicator dots */
+        .snap-dot {
+            position: absolute;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.35);
+            pointer-events: none;
+            z-index: 3;
+            transform: translate(-50%, -50%);
+            display: none;
+        }
+        .canvas-wrapper.has-image .snap-dot {
+            display: block;
+        }
+
+        /* Placeholder */
+        .placeholder {
+            position: absolute;
+            pointer-events: none;
+            z-index: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            text-align: center;
+        }
+        .placeholder .upload-icon {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: var(--surface-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 26px;
+            border: 2px dashed var(--border);
+        }
+        .canvas-wrapper.has-image .placeholder {
+            display: none;
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+        }
+
+        .btn {
+            padding: 10px 18px;
+            border-radius: 10px;
+            border: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            letter-spacing: -0.2px;
+            transition: all var(--transition);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+            font-family: inherit;
+        }
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+            box-shadow: 0 4px 14px var(--accent-glow);
+        }
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            box-shadow: 0 6px 22px var(--accent-glow);
+            transform: translateY(-1px);
+        }
+        .btn-primary:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 8px var(--accent-glow);
+        }
+        .btn-outline {
+            background: transparent;
+            color: var(--text);
+            border: 1.5px solid var(--border);
+        }
+        .btn-outline:hover {
+            background: var(--surface-light);
+            border-color: #555;
+        }
+        .btn-save {
+            background: #2ecc71;
+            color: #fff;
+            box-shadow: 0 4px 14px rgba(46, 204, 113, 0.3);
+        }
+        .btn-save:hover {
+            background: #3ddb80;
+            box-shadow: 0 6px 22px rgba(46, 204, 113, 0.4);
+            transform: translateY(-1px);
+        }
+        .btn-save:active {
+            transform: translateY(0);
+        }
+        .btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+            pointer-events: none;
+            filter: grayscale(30%);
+        }
+
+        /* Angle display */
+        .angle-display {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--surface-light);
+            padding: 9px 14px;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text);
+            border: 1px solid var(--border);
+            min-width: 80px;
+            justify-content: center;
+            letter-spacing: -0.2px;
+        }
+        .angle-display .degree-value {
+            font-weight: 700;
+            color: var(--accent);
+            font-variant-numeric: tabular-nums;
+            font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace;
+            min-width: 42px;
+            text-align: right;
+        }
+        .angle-display.snapped .degree-value {
+            color: #2ecc71;
+        }
+
+        /* File input hidden */
+        #fileInput {
+            display: none;
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .app-container {
+                padding: 16px 12px 14px;
+                gap: 12px;
+                border-radius: 14px;
+            }
+            .btn {
+                padding: 8px 13px;
+                font-size: 0.8rem;
+                border-radius: 8px;
+            }
+            .angle-display {
+                padding: 7px 10px;
+                font-size: 0.8rem;
+            }
+            .rotation-handle {
+                width: 34px;
+                height: 34px;
+                border-width: 2.5px;
+            }
+            .rotation-handle::after {
+                width: 8px;
+                height: 8px;
+            }
+            .app-header h1 {
+                font-size: 1.1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <div class="app-header">
+            <div class="icon">🔄</div>
+            <h1>Image Rotator</h1>
+        </div>
+
+        <!-- Canvas Area -->
+        <div class="canvas-wrapper" id="canvasWrapper">
+            <canvas id="mainCanvas"></canvas>
+            <div class="rotation-handle no-transition" id="rotationHandle" title="Drag to rotate"></div>
+            <!-- Snap dots (injected by JS) -->
+            <div class="placeholder" id="placeholder">
+                <div class="upload-icon">📁</div>
+                <span>Load an image to begin</span>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <button class="btn btn-primary" id="btnLoad" title="Load a local image">
+                📂 Load Image
+            </button>
+            <div class="angle-display" id="angleDisplay">
+                Angle: <span class="degree-value" id="angleValue">0.0</span>°
+            </div>
+            <button class="btn btn-outline" id="btnReset" disabled title="Reset rotation to 0°">
+                ↺ Reset
+            </button>
+            <button class="btn btn-save" id="btnSave" disabled title="Save rotated image as PNG">
+                💾 Save Image
+            </button>
+        </div>
+        <input type="file" id="fileInput" accept="image/*">
+    </div>
+
+    <script>
+        (function() {
+            // ─────────────────────────────────────
+            // DOM references
+            // ─────────────────────────────────────
+            const canvasWrapper = document.getElementById('canvasWrapper');
+            const canvas = document.getElementById('mainCanvas');
+            const ctx = canvas.getContext('2d');
+            const handle = document.getElementById('rotationHandle');
+            const placeholder = document.getElementById('placeholder');
+            const angleDisplay = document.getElementById('angleDisplay');
+            const angleValueEl = document.getElementById('angleValue');
+            const btnLoad = document.getElementById('btnLoad');
+            const btnReset = document.getElementById('btnReset');
+            const btnSave = document.getElementById('btnSave');
+            const fileInput = document.getElementById('fileInput');
+
+            // ─────────────────────────────────────
+            // State
+            // ─────────────────────────────────────
+            let image = null; // loaded HTMLImageElement
+            let scaledImgWidth = 0;
+            let scaledImgHeight = 0;
+            let rotationAngle = 0; // radians
+            let canvasSize = 300; // default placeholder size
+            let orbitRadius = 100;
+            let centerX = 150;
+            let centerY = 150;
+            let isDragging = false;
+            let hasImage = false;
+
+            // Snap settings
+            const SNAP_THRESHOLD_DEG = 2.0; // degrees
+            const SNAP_THRESHOLD_RAD = SNAP_THRESHOLD_DEG * Math.PI / 180;
+            const SNAP_ANGLES_DEG = [0, 90, 180, 270, 360]; // 360 wraps to 0
+            const SNAP_ANGLES_RAD = SNAP_ANGLES_DEG.map(d => d * Math.PI / 180);
+
+            // Max display dimension for the image
+            const MAX_DISPLAY_DIM = 460;
+
+            // ─────────────────────────────────────
+            // Utility: normalize angle to [0, 2π)
+            // ─────────────────────────────────────
+            function normalizeAngle(angle) {
+                const twoPi = 2 * Math.PI;
+                return ((angle % twoPi) + twoPi) % twoPi;
+            }
+
+            // ─────────────────────────────────────
+            // Utility: convert degrees to radians
+            // ─────────────────────────────────────
+            function degToRad(deg) {
+                return deg * Math.PI / 180;
+            }
+
+            function radToDeg(rad) {
+                return rad * 180 / Math.PI;
+            }
+
+            // ─────────────────────────────────────
+            // Snap angle
+            // ─────────────────────────────────────
+            function snapAngle(angleRad) {
+                const normalized = normalizeAngle(angleRad);
+                for (const snapRad of SNAP_ANGLES_RAD) {
+                    let diff = Math.abs(normalized - snapRad);
+                    if (diff > Math.PI) diff = 2 * Math.PI - diff;
+                    if (diff <= SNAP_THRESHOLD_RAD) {
+                        return snapRad % (2 * Math.PI); // return snapped (0 for 2π)
+                    }
+                }
+                return angleRad; // no snap
+            }
+
+            function isSnapped(angleRad) {
+                const snapped = snapAngle(angleRad);
+                return Math.abs(normalizeAngle(angleRad) - normalizeAngle(snapped)) < 0.0001;
+            }
+
+            // ─────────────────────────────────────
+            // Compute canvas size & orbit radius
+            // ─────────────────────────────────────
+            function computeCanvasParams() {
+                if (!hasImage) {
+                    canvasSize = 300;
+                    centerX = canvasSize / 2;
+                    centerY = canvasSize / 2;
+                    orbitRadius = 100;
+                    return;
+                }
+                const diagonal = Math.sqrt(scaledImgWidth ** 2 + scaledImgHeight ** 2);
+                const handleGap = 28; // gap from image corner to handle center
+                orbitRadius = diagonal / 2 + handleGap;
+                canvasSize = Math.max(Math.ceil(orbitRadius * 2 + 20), 300);
+                // Ensure canvasSize is even for clean centering
+                if (canvasSize % 2 !== 0) canvasSize++;
+                centerX = canvasSize / 2;
+                centerY = canvasSize / 2;
+                // Recalculate orbitRadius to be consistent
+                orbitRadius = diagonal / 2 + handleGap;
+            }
+
+            // ─────────────────────────────────────
+            // Update handle position from rotationAngle
+            // ─────────────────────────────────────
+            function updateHandlePosition() {
+                // Handle orbits at angle (rotationAngle - π/2) from positive x-axis
+                const handleAngle = rotationAngle - Math.PI / 2;
+                const hx = centerX + orbitRadius * Math.cos(handleAngle);
+                const hy = centerY + orbitRadius * Math.sin(handleAngle);
+                handle.style.left = hx + 'px';
+                handle.style.top = hy + 'px';
+            }
+
+            // ─────────────────────────────────────
+            // Update snap dots position
+            // ─────────────────────────────────────
+            function updateSnapDots() {
+                // Remove existing snap dots
+                const existingDots = canvasWrapper.querySelectorAll('.snap-dot');
+                existingDots.forEach(d => d.remove());
+
+                if (!hasImage) return;
+
+                // Place dots at cardinal snap positions on the orbit circle
+                const snapDisplayAngles = [0, 90, 180, 270]; // degrees (rotation angles)
+                for (const snapDeg of snapDisplayAngles) {
+                    const snapRad = degToRad(snapDeg);
+                    const handleAngle = snapRad - Math.PI / 2;
+                    const sx = centerX + orbitRadius * Math.cos(handleAngle);
+                    const sy = centerY + orbitRadius * Math.sin(handleAngle);
+
+                    const dot = document.createElement('div');
+                    dot.className = 'snap-dot';
+                    dot.style.left = sx + 'px';
+                    dot.style.top = sy + 'px';
+                    canvasWrapper.appendChild(dot);
+                }
+            }
+
+            // ─────────────────────────────────────
+            // Update guide ring (CSS pseudo-element)
+            // ─────────────────────────────────────
+            function updateGuideRing() {
+                if (!hasImage) {
+                    canvasWrapper.style.setProperty('--guide-size', '0px');
+                    canvasWrapper.style.setProperty('--guide-left', '0px');
+                    canvasWrapper.style.setProperty('--guide-top', '0px');
+                    return;
+                }
+                const diameter = orbitRadius * 2;
+                const left = centerX - orbitRadius;
+                const top = centerY - orbitRadius;
+                // We'll use a style tag or direct manipulation
+                // Actually, let's use a data attribute approach via a <style> injection
+                // Simpler: just update the pseudo-element via CSS custom properties
+                canvasWrapper.style.setProperty('--guide-diameter', diameter + 'px');
+                canvasWrapper.style.setProperty('--guide-left', left + 'px');
+                canvasWrapper.style.setProperty('--guide-top', top + 'px');
+            }
+
+            // Inject dynamic styles for the guide ring
+            const guideStyleEl = document.createElement('style');
+            guideStyleEl.textContent = `
+                .canvas-wrapper.has-image::before {
+                    display: block;
+                    width: var(--guide-diameter, 0px);
+                    height: var(--guide-diameter, 0px);
+                    left: var(--guide-left, 0px);
+                    top: var(--guide-top, 0px);
+                    border-radius: 50%;
+                    border: 1.5px dashed rgba(255,255,255,0.12);
+                    position: absolute;
+                    content: '';
+                    pointer-events: none;
+                    z-index: 2;
+                }
+            `;
+            document.head.appendChild(guideStyleEl);
+
+            // ─────────────────────────────────────
+            // Draw the canvas
+            // ─────────────────────────────────────
+            function drawCanvas() {
+                ctx.clearRect(0, 0, canvasSize, canvasSize);
+
+                // Subtle background grid (checkerboard-style dots)
+                ctx.fillStyle = '#2a2a42';
+                ctx.fillRect(0, 0, canvasSize, canvasSize);
+
+                // Draw subtle dot grid
+                const dotSpacing = 16;
+                ctx.fillStyle = 'rgba(255,255,255,0.03)';
+                for (let x = dotSpacing; x < canvasSize; x += dotSpacing) {
+                    for (let y = dotSpacing; y < canvasSize; y += dotSpacing) {
+                        ctx.beginPath();
+                        ctx.arc(x, y, 0.8, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+
+                if (!hasImage || !image) return;
+
+                // Draw the rotated image centered on the canvas
+                ctx.save();
+                ctx.translate(centerX, centerY);
+                ctx.rotate(rotationAngle);
+                ctx.drawImage(image, -scaledImgWidth / 2, -scaledImgHeight / 2, scaledImgWidth, scaledImgHeight);
+                ctx.restore();
+
+                // Draw subtle crosshair at center
+                ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+                ctx.lineWidth = 0.5;
+                ctx.beginPath();
+                ctx.moveTo(centerX - 8, centerY);
+                ctx.lineTo(centerX + 8, centerY);
+                ctx.moveTo(centerX, centerY - 8);
+                ctx.lineTo(centerX, centerY + 8);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, 3, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(255,255,255,0.25)';
+                ctx.fill();
+            }
+
+            // ─────────────────────────────────────
+            // Full refresh: recalc, redraw, reposition
+            // ─────────────────────────────────────
+            function fullRefresh() {
+                computeCanvasParams();
+                canvas.width = canvasSize;
+                canvas.height = canvasSize;
+                canvas.style.width = canvasSize + 'px';
+                canvas.style.height = canvasSize + 'px';
+                canvasWrapper.style.width = canvasSize + 'px';
+                canvasWrapper.style.height = canvasSize + 'px';
+                drawCanvas();
+                updateHandlePosition();
+                updateSnapDots();
+                updateGuideRing();
+                updateAngleDisplay();
+                updateButtonStates();
+            }
+
+            // ─────────────────────────────────────
+            // Update angle display
+            // ─────────────────────────────────────
+            function updateAngleDisplay() {
+                const deg = radToDeg(normalizeAngle(rotationAngle));
+                const snapped = isSnapped(rotationAngle);
+                angleValueEl.textContent = deg.toFixed(1);
+                if (snapped) {
+                    angleDisplay.classList.add('snapped');
+                } else {
+                    angleDisplay.classList.remove('snapped');
+                }
+            }
+
+            // ─────────────────────────────────────
+            // Update button states
+            // ─────────────────────────────────────
+            function updateButtonStates() {
+                if (hasImage) {
+                    btnReset.disabled = false;
+                    btnSave.disabled = false;
+                } else {
+                    btnReset.disabled = true;
+                    btnSave.disabled = true;
+                }
+            }
+
+            // ─────────────────────────────────────
+            // Set rotation angle (with snap, refresh)
+            // ─────────────────────────────────────
+            function setRotationAngle(angleRad, applySnap = true) {
+                if (applySnap) {
+                    rotationAngle = snapAngle(angleRad);
+                } else {
+                    rotationAngle = angleRad;
+                }
+                rotationAngle = normalizeAngle(rotationAngle);
+                drawCanvas();
+                updateHandlePosition();
+                updateAngleDisplay();
+            }
+
+            // ─────────────────────────────────────
+            // Load image from file
+            // ─────────────────────────────────────
+            function loadImageFromFile(file) {
+                if (!file || !file.type.startsWith('image/')) {
+                    alert('Please select a valid image file.');
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = new Image();
+                    img.onload = function() {
+                        // Scale image to fit within MAX_DISPLAY_DIM
+                        const origW = img.naturalWidth;
+                        const origH = img.naturalHeight;
+                        let scale = 1;
+                        if (origW > origH) {
+                            if (origW > MAX_DISPLAY_DIM) scale = MAX_DISPLAY_DIM / origW;
+                        } else {
+                            if (origH > MAX_DISPLAY_DIM) scale = MAX_DISPLAY_DIM / origH;
+                        }
+                        scaledImgWidth = Math.round(origW * scale);
+                        scaledImgHeight = Math.round(origH * scale);
+
+                        // Create a new image at the scaled size for canvas drawing
+                        // We'll use the original img and let drawImage handle scaling
+                        image = img;
+                        rotationAngle = 0;
+                        hasImage = true;
+                        canvasWrapper.classList.add('has-image');
+                        placeholder.style.display = 'none';
+                        fullRefresh();
+                    };
+                    img.onerror = function() {
+                        alert('Failed to load image. Please try another file.');
+                    };
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+
+            // ─────────────────────────────────────
+            // Reset rotation
+            // ─────────────────────────────────────
+            function resetRotation() {
+                if (!hasImage) return;
+                setRotationAngle(0, true);
+                fullRefresh();
+            }
+
+            // ─────────────────────────────────────
+            // Save image
+            // ─────────────────────────────────────
+            function saveImage() {
+                if (!hasImage || !image) return;
+
+                // Create offscreen canvas for clean output (no guides)
+                const offCanvas = document.createElement('canvas');
+                offCanvas.width = canvasSize;
+                offCanvas.height = canvasSize;
+                const offCtx = offCanvas.getContext('2d');
+
+                // White background for the saved image
+                offCtx.fillStyle = '#ffffff';
+                offCtx.fillRect(0, 0, canvasSize, canvasSize);
+
+                // Draw rotated image
+                offCtx.save();
+                offCtx.translate(centerX, centerY);
+                offCtx.rotate(rotationAngle);
+                offCtx.drawImage(image, -scaledImgWidth / 2, -scaledImgHeight / 2, scaledImgWidth,
+                scaledImgHeight);
+                offCtx.restore();
+
+                // Trigger download
+                offCanvas.toBlob(function(blob) {
+                    if (!blob) {
+                        // Fallback
+                        const dataUrl = offCanvas.toDataURL('image/png');
+                        triggerDownload(dataUrl, 'rotated-image.png');
+                        return;
+                    }
+                    const url = URL.createObjectURL(blob);
+                    triggerDownload(url, 'rotated-image.png');
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                }, 'image/png');
+            }
+
+            function triggerDownload(url, filename) {
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }
+
+            // ─────────────────────────────────────
+            // Coordinate conversion: client -> canvas
+            // ─────────────────────────────────────
+            function getCanvasCoords(clientX, clientY) {
+                const rect = canvasWrapper.getBoundingClientRect();
+                return {
+                    x: clientX - rect.left,
+                    y: clientY - rect.top,
+                };
+            }
+
+            // ─────────────────────────────────────
+            // Drag handling
+            // ─────────────────────────────────────
+            function startDrag(clientX, clientY) {
+                if (!hasImage) return;
+                isDragging = true;
+                handle.classList.add('dragging', 'no-transition');
+                canvasWrapper.classList.add('dragging');
+                document.body.style.cursor = 'grabbing';
+                // Immediately update based on current position
+                updateRotationFromClient(clientX, clientY);
+            }
+
+            function updateRotationFromClient(clientX, clientY) {
+                if (!isDragging || !hasImage) return;
+                const coords = getCanvasCoords(clientX, clientY);
+                const dx = coords.x - centerX;
+                const dy = coords.y - centerY;
+                // Compute raw angle: atan2(dy, dx) + π/2 so top = 0 rotation
+                let rawAngle = Math.atan2(dy, dx) + Math.PI / 2;
+                rawAngle = normalizeAngle(rawAngle);
+                // Apply snap
+                const snapped = snapAngle(rawAngle);
+                rotationAngle = snapped;
+                drawCanvas();
+                updateHandlePosition();
+                updateAngleDisplay();
+            }
+
+            function endDrag() {
+                if (!isDragging) return;
+                isDragging = false;
+                handle.classList.remove('dragging', 'no-transition');
+                canvasWrapper.classList.remove('dragging');
+                document.body.style.cursor = '';
+                // Finalize with snap
+                setRotationAngle(rotationAngle, true);
+                // Small delay then re-enable transition
+                setTimeout(() => {
+                    handle.classList.remove('no-transition');
+                }, 50);
+            }
+
+            // ─────────────────────────────────────
+            // Mouse event handlers
+            // ─────────────────────────────────────
+            handle.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                startDrag(e.clientX, e.clientY);
+            });
+
+            // Also allow starting drag from the canvas wrapper (anywhere)
+            canvasWrapper.addEventListener('mousedown', function(e) {
+                if (!hasImage) return;
+                // Don't intercept if clicking the handle (handle has its own handler)
+                if (e.target === handle || handle.contains(e.target)) return;
+                e.preventDefault();
+                startDrag(e.clientX, e.clientY);
+            });
+
+            document.addEventListener('mousemove', function(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+                updateRotationFromClient(e.clientX, e.clientY);
+            });
+
+            document.addEventListener('mouseup', function(e) {
+                if (isDragging) {
+                    e.preventDefault();
+                    endDrag();
+                }
+            });
+
+            // ─────────────────────────────────────
+            // Touch event handlers
+            // ─────────────────────────────────────
+            handle.addEventListener('touchstart', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.touches.length === 1) {
+                    startDrag(e.touches[0].clientX, e.touches[0].clientY);
+                }
+            }, { passive: false });
+
+            canvasWrapper.addEventListener('touchstart', function(e) {
+                if (!hasImage) return;
+                if (e.target === handle || handle.contains(e.target)) return;
+                if (e.touches.length === 1) {
+                    e.preventDefault();
+                    startDrag(e.touches[0].clientX, e.touches[0].clientY);
+                }
+            }, { passive: false });
+
+            document.addEventListener('touchmove', function(e) {
+                if (!isDragging) return;
+                if (e.touches.length === 1) {
+                    e.preventDefault();
+                    updateRotationFromClient(e.touches[0].clientX, e.touches[0].clientY);
+                }
+            }, { passive: false });
+
+            document.addEventListener('touchend', function(e) {
+                if (isDragging) {
+                    e.preventDefault();
+                    endDrag();
+                }
+            });
+
+            document.addEventListener('touchcancel', function(e) {
+                if (isDragging) {
+                    endDrag();
+                }
+            });
+
+            // ─────────────────────────────────────
+            // Button handlers
+            // ─────────────────────────────────────
+            btnLoad.addEventListener('click', function() {
+                fileInput.click();
+            });
+
+            fileInput.addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    loadImageFromFile(file);
+                }
+                // Reset file input so same file can be re-selected
+                fileInput.value = '';
+            });
+
+            btnReset.addEventListener('click', function() {
+                resetRotation();
+            });
+
+            btnSave.addEventListener('click', function() {
+                saveImage();
+            });
+
+            // ─────────────────────────────────────
+            // Keyboard shortcuts
+            // ─────────────────────────────────────
+            document.addEventListener('keydown', function(e) {
+                if (!hasImage) return;
+                // Arrow keys for fine rotation
+                const step = degToRad(1); // 1 degree step
+                if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setRotationAngle(rotationAngle + step, false);
+                    fullRefresh();
+                } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setRotationAngle(rotationAngle - step, false);
+                    fullRefresh();
+                } else if (e.key === 'r' || e.key === 'R') {
+                    // 'R' for reset
+                    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+                        e.preventDefault();
+                        resetRotation();
+                    }
+                } else if (e.key === 's' || e.key === 'S') {
+                    // 'S' for save (with Ctrl/Cmd)
+                    if (e.ctrlKey || e.metaKey) {
+                        e.preventDefault();
+                        saveImage();
+                    }
+                }
+            });
+
+            // ─────────────────────────────────────
+            // Drag & drop file support
+            // ─────────────────────────────────────
+            canvasWrapper.addEventListener('dragover', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                canvasWrapper.style.boxShadow =
+                    'inset 0 0 0 2px var(--accent), 0 8px 32px rgba(0,0,0,0.4), 0 0 60px var(--accent-glow)';
+            });
+
+            canvasWrapper.addEventListener('dragleave', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                canvasWrapper.style.boxShadow = 'inset 0 0 0 1px var(--border), 0 8px 32px rgba(0,0,0,0.4)';
+            });
+
+            canvasWrapper.addEventListener('drop', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                canvasWrapper.style.boxShadow = 'inset 0 0 0 1px var(--border), 0 8px 32px rgba(0,0,0,0.4)';
+                const file = e.dataTransfer.files[0];
+                if (file && file.type.startsWith('image/')) {
+                    loadImageFromFile(file);
+                }
+            });
+
+            // Also support drop on the whole document
+            document.addEventListener('dragover', function(e) {
+                e.preventDefault();
+            });
+            document.addEventListener('drop', function(e) {
+                e.preventDefault();
+                const file = e.dataTransfer.files[0];
+                if (file && file.type.startsWith('image/')) {
+                    // Check if drop target is outside our wrapper
+                    if (!canvasWrapper.contains(e.target)) {
+                        loadImageFromFile(file);
+                    }
+                }
+            });
+
+            // ─────────────────────────────────────
+            // Initial setup
+            // ─────────────────────────────────────
+            function initialSetup() {
+                hasImage = false;
+                image = null;
+                rotationAngle = 0;
+                scaledImgWidth = 0;
+                scaledImgHeight = 0;
+                canvasSize = 320;
+                centerX = canvasSize / 2;
+                centerY = canvasSize / 2;
+                orbitRadius = 110;
+                canvas.width = canvasSize;
+                canvas.height = canvasSize;
+                canvas.style.width = canvasSize + 'px';
+                canvas.style.height = canvasSize + 'px';
+                canvasWrapper.style.width = canvasSize + 'px';
+                canvasWrapper.style.height = canvasSize + 'px';
+                canvasWrapper.classList.remove('has-image');
+                placeholder.style.display = 'flex';
+                drawCanvas();
+                updateHandlePosition();
+                updateSnapDots();
+                updateGuideRing();
+                updateAngleDisplay();
+                updateButtonStates();
+                handle.classList.add('no-transition');
+                setTimeout(() => handle.classList.remove('no-transition'), 100);
+            }
+
+            initialSetup();
+
+            // ─────────────────────────────────────
+            // Handle window resize (recalculate positions)
+            // ─────────────────────────────────────
+            let resizeTimeout;
+            window.addEventListener('resize', () => {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    if (hasImage) {
+                        updateHandlePosition();
+                        updateSnapDots();
+                        updateGuideRing();
+                    }
+                }, 200);
+            });
+
+            console.log('🔄 Image Rotation Tool ready!');
+            console.log('  - Load an image via button or drag & drop');
+            console.log('  - Drag the pink handle to rotate');
+            console.log('  - Arrow keys for fine 1° adjustments');
+            console.log('  - Press "R" to reset, Ctrl+S to save');
+            console.log('  - Snaps to 0°, 90°, 180°, 270° within 2°');
+        })();
+    </script>
+</body>
+</html>
