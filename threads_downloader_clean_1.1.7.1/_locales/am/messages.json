@@ -1,0 +1,137 @@
+{
+  "btn_title": {
+    "message": "Download"
+  },
+  "bulk_and_label": {
+    "message": "and"
+  },
+  "bulk_archives_label": {
+    "message": "archive(s)"
+  },
+  "bulk_blocked_text": {
+    "message": "Due to Chrome memory limitations simultaneous downloads are not possible. Please wait until current downloading is complete"
+  },
+  "bulk_blocked_title": {
+    "message": "Threads Downloader"
+  },
+  "bulk_cancel_btn": {
+    "message": "Cancel"
+  },
+  "bulk_close_btn": {
+    "message": "Close"
+  },
+  "bulk_collect_error_busy": {
+    "message": "Threads is under heavy load right now. Please try again a little later."
+  },
+  "bulk_collect_error_generic": {
+    "message": "Could not collect media right now. Please try again a little later."
+  },
+  "bulk_collect_title": {
+    "message": "Collecting Media"
+  },
+  "bulk_collecting_status": {
+    "message": "Collecting media..."
+  },
+  "bulk_collection_found_prefix": {
+    "message": "Found"
+  },
+  "bulk_collection_stopped_prefix": {
+    "message": "Collection stopped. Found"
+  },
+  "bulk_collection_stopping_notice": {
+    "message": "Finishing search... Please wait a little."
+  },
+  "bulk_date_from_label": {
+    "message": "from"
+  },
+  "bulk_date_to_label": {
+    "message": "to"
+  },
+  "bulk_download_btn": {
+    "message": "Download"
+  },
+  "bulk_download_cancelled": {
+    "message": "Download cancelled"
+  },
+  "bulk_download_error_generic": {
+    "message": "Could not prepare the download right now. Please try again a little later."
+  },
+  "bulk_download_failed_prefix": {
+    "message": "Download failed:"
+  },
+  "bulk_download_latest_mode": {
+    "message": "Download Latest"
+  },
+  "bulk_download_timeframe_mode": {
+    "message": "Download by Date"
+  },
+  "bulk_download_title": {
+    "message": "Mass Download"
+  },
+  "bulk_downloading_files_status": {
+    "message": "Downloading files..."
+  },
+  "bulk_files_label": {
+    "message": "files"
+  },
+  "bulk_into_archives_prefix": {
+    "message": "into"
+  },
+  "bulk_latest_posts_label": {
+    "message": "Latest posts"
+  },
+  "bulk_media_label": {
+    "message": "media"
+  },
+  "bulk_media_label_title": {
+    "message": "Media"
+  },
+  "bulk_no_media_to_download": {
+    "message": "No collected media to download"
+  },
+  "bulk_ok_btn": {
+    "message": "OK"
+  },
+  "bulk_photo_label": {
+    "message": "Photo"
+  },
+  "bulk_posts_label": {
+    "message": "Posts"
+  },
+  "bulk_preparing_archive_part": {
+    "message": "Packing downloaded media into .zip $1. Downloading will resume"
+  },
+  "bulk_preparing_final_archive": {
+    "message": "Preparing final archive. Please wait until the file appears"
+  },
+  "bulk_profile_btn": {
+    "message": "Download All"
+  },
+  "bulk_progress_downloading_media": {
+    "message": "Downloading media..."
+  },
+  "bulk_progress_downloading_title": {
+    "message": "Downloading"
+  },
+  "bulk_result_title": {
+    "message": "Download complete"
+  },
+  "bulk_saved_prefix": {
+    "message": "Saved"
+  },
+  "bulk_search_again_btn": {
+    "message": "Collect again"
+  },
+  "bulk_stop_btn": {
+    "message": "Stop"
+  },
+  "bulk_video_label": {
+    "message": "Video"
+  },
+  "description": {
+    "message": "የThreads ቪዲዮዎችን፣ ፎቶዎችን፣ ካሩሴል ፖስቶችን እና ፕሮፋይል ሚዲያ ያውርዱ። ሁሉንም የThreads ሚዲያ በጥራት ያስቀምጡ"
+  },
+  "name": {
+    "message": "Threads አውራጅ - ሁሉንም ሚዲያ ያውርዱ"
+  }
+}

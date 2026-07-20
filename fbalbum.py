@@ -47,7 +47,8 @@ from selenium.webdriver.firefox.options import Options
 # START_URL = "https://www.facebook.com/photo.php?fbid=1316297517345506&set=pb.100068958100534.-2207520000&type=3"
 # START_URL = "https://www.facebook.com/photo/?fbid=122174818106691405&set=g.469040726197914"
 # START_URL = "https://www.facebook.com/photo.php?fbid=1514271553672347&set=pb.100052685491871.-2207520000&type=3"
-START_URL = "https://www.facebook.com/photo.php?fbid=2085505352012211&set=pb.100016582998481.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=2085505352012211&set=pb.100016582998481.-2207520000&type=3"
+START_URL = "https://www.facebook.com/photo.php?fbid=27693852626923966&set=pb.100001778033019.-2207520000&type=3"
 
 OUT_DIR = "fb_photos"
 

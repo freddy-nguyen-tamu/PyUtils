@@ -1,0 +1,47 @@
+{
+  "action": {
+    "default_icon": "icons/icon_128.png",
+    "default_title": "__MSG_name__"
+  },
+  "background": {
+    "service_worker": "js/sw.js"
+  },
+  "content_scripts": [
+    {
+      "all_frames": true,
+      "css": [
+        "css/content.css"
+      ],
+      "js": [
+        "js/cs.js"
+      ],
+      "matches": [
+        "https://*.threads.com/*",
+        "https://*.threads.net/*"
+      ]
+    }
+  ],
+  "default_locale": "en",
+  "description": "Download Threads videos, photos, carousel posts, and profile media. Promotional redirect code removed.",
+  "host_permissions": [
+    "https://www.threads.com/*",
+    "https://i.instagram.com/*",
+    "https://www.instagram.com/*",
+    "https://*.cdninstagram.com/*",
+    "https://*.fbcdn.net/*"
+  ],
+  "icons": {
+    "128": "icons/icon_128.png"
+  },
+  "manifest_version": 3,
+  "name": "Threads Downloader (Cleaned)",
+  "permissions": [
+    "downloads",
+    "declarativeNetRequestWithHostAccess",
+    "cookies",
+    "storage",
+    "webRequest",
+    "tabs"
+  ],
+  "version": "1.1.7.1"
+}
