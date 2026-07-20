@@ -724,8 +724,8 @@ class VideoQueueReviewer:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Video Queue Reviewer")
-        self.root.geometry("1240x780")
-        self.root.minsize(880, 580)
+        self.root.geometry("1420x840")
+        self.root.minsize(1050, 650)
 
         self.queue: list[Path] = []
         self.media = None
@@ -770,6 +770,12 @@ class VideoQueueReviewer:
         self.export_context: dict | None = None
         self.next_background_job_id = 1
         self.reserved_output_paths: set[str] = set()
+
+        # Both optional side panels start collapsed so the video-choice list
+        # receives most of the available vertical space.
+        self.controls_collapsed = True
+        self.background_collapsed = True
+        self.queue_selection_in_progress = False
 
         self.last_clip_field = "start"
 
@@ -840,7 +846,7 @@ class VideoQueueReviewer:
         main = ttk.Frame(self.root, padding=8)
         main.grid(row=0, column=0, sticky="nsew")
         main.columnconfigure(0, weight=5)
-        main.columnconfigure(1, weight=1)
+        main.columnconfigure(1, weight=2, minsize=420)
         main.rowconfigure(1, weight=1)
         self.main_frame = main
 
@@ -862,17 +868,32 @@ class VideoQueueReviewer:
         self.video_panel = tk.Frame(main, background="black")
         self.video_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
 
-        side = ttk.Frame(main)
+        self.side_panel = ttk.Frame(main)
+        side = self.side_panel
         side.grid(row=1, column=1, sticky="nsew")
         side.columnconfigure(0, weight=1)
-        side.rowconfigure(2, weight=3)
-        side.rowconfigure(3, weight=1)
+        side.rowconfigure(2, weight=8)
+        side.rowconfigure(4, weight=0)
 
-        ttk.Label(
+        self.controls_toggle_button = ttk.Button(
             side,
-            text="Controls",
-            font=("Segoe UI", 11, "bold"),
-        ).grid(row=0, column=0, sticky="w")
+            text="▶ Keyboard shortcuts",
+            command=self._toggle_controls_panel,
+            takefocus=False,
+        )
+        self.controls_toggle_button.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+        )
+
+        self.controls_frame = ttk.Frame(side)
+        self.controls_frame.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(5, 8),
+        )
 
         controls_text = (
             "1  Keep + next\n"
@@ -884,60 +905,106 @@ class VideoQueueReviewer:
             "J / L  Seek 10 seconds\n"
             "Home  Beginning\n"
             "Shift+Space  Save frame + stay\n\n"
-            "Timeline: click or drag to seek\n"
-            "Frame saves are queued in background\n"
-            "Clip: focus Start/End, then use current time"
+            "Click any queue video to jump to it.\n"
+            "Frame saves are queued in background.\n"
+            "Clip: focus Start/End, then use current time."
         )
         ttk.Label(
-            side,
+            self.controls_frame,
             text=controls_text,
             justify="left",
-            wraplength=260,
-        ).grid(row=1, column=0, sticky="ew", pady=(6, 8))
+            wraplength=390,
+        ).grid(row=0, column=0, sticky="ew")
+        self.controls_frame.columnconfigure(0, weight=1)
 
-        queue_frame = ttk.LabelFrame(side, text="Queue")
-        queue_frame.grid(row=2, column=0, sticky="nsew")
-        queue_frame.columnconfigure(0, weight=1)
-        queue_frame.rowconfigure(0, weight=1)
+        self.queue_frame = ttk.LabelFrame(
+            side,
+            text="Video choices — click one to jump",
+        )
+        self.queue_frame.grid(
+            row=2,
+            column=0,
+            sticky="nsew",
+            pady=(7, 0),
+        )
+        self.queue_frame.columnconfigure(0, weight=1)
+        self.queue_frame.rowconfigure(0, weight=1)
 
         self.queue_list = tk.Listbox(
-            queue_frame,
-            activestyle="none",
+            self.queue_frame,
+            activestyle="dotbox",
             exportselection=False,
             selectmode=tk.SINGLE,
-            borderwidth=0,
-            highlightthickness=0,
+            borderwidth=1,
+            highlightthickness=1,
+            width=48,
         )
-        self.queue_list.grid(row=0, column=0, sticky="nsew")
+        self.queue_list.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+        )
 
         queue_scroll = ttk.Scrollbar(
-            queue_frame,
+            self.queue_frame,
             orient="vertical",
             command=self.queue_list.yview,
         )
         queue_scroll.grid(row=0, column=1, sticky="ns")
-        self.queue_list.configure(yscrollcommand=queue_scroll.set)
+
+        queue_horizontal_scroll = ttk.Scrollbar(
+            self.queue_frame,
+            orient="horizontal",
+            command=self.queue_list.xview,
+        )
+        queue_horizontal_scroll.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+        )
+
+        self.queue_list.configure(
+            yscrollcommand=queue_scroll.set,
+            xscrollcommand=queue_horizontal_scroll.set,
+        )
+        self.queue_list.bind(
+            "<<ListboxSelect>>",
+            self._on_queue_item_selected,
+        )
+
+        self.background_toggle_button = ttk.Button(
+            side,
+            text="▶ Background jobs: 0",
+            command=self._toggle_background_panel,
+            takefocus=False,
+        )
+        self.background_toggle_button.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            pady=(8, 0),
+        )
 
         self.background_frame = ttk.LabelFrame(
             side,
-            text="Background jobs: 0",
+            text="Background job details",
         )
         self.background_frame.grid(
-            row=3,
+            row=4,
             column=0,
             sticky="nsew",
-            pady=(8, 0),
+            pady=(5, 0),
         )
         self.background_frame.columnconfigure(0, weight=1)
         self.background_frame.rowconfigure(0, weight=1)
 
         self.background_list = tk.Listbox(
             self.background_frame,
-            height=6,
+            height=7,
             activestyle="none",
             exportselection=False,
-            borderwidth=0,
-            highlightthickness=0,
+            borderwidth=1,
+            highlightthickness=1,
         )
         self.background_list.grid(
             row=0,
@@ -958,6 +1025,10 @@ class VideoQueueReviewer:
         self.background_list.configure(
             yscrollcommand=background_scroll.set
         )
+
+        # Start with both optional sections collapsed, maximizing queue space.
+        self.controls_frame.grid_remove()
+        self.background_frame.grid_remove()
 
         buttons = ttk.Frame(main)
         buttons.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(7, 0))
@@ -1144,6 +1215,86 @@ class VideoQueueReviewer:
         if not self.closed:
             self.toast_label.place_forget()
 
+    def _toggle_controls_panel(self) -> None:
+        self.controls_collapsed = not self.controls_collapsed
+
+        if self.controls_collapsed:
+            self.controls_frame.grid_remove()
+            self.controls_toggle_button.configure(
+                text="▶ Keyboard shortcuts"
+            )
+        else:
+            self.controls_frame.grid()
+            self.controls_toggle_button.configure(
+                text="▼ Keyboard shortcuts"
+            )
+
+    def _toggle_background_panel(self) -> None:
+        self.background_collapsed = not self.background_collapsed
+
+        if self.background_collapsed:
+            self.background_frame.grid_remove()
+            self.side_panel.rowconfigure(4, weight=0)
+        else:
+            self.background_frame.grid()
+            self.side_panel.rowconfigure(4, weight=2)
+
+        self._update_background_count()
+
+    def _on_queue_item_selected(self, _event=None) -> None:
+        """
+        Make the clicked list item the active video.
+
+        The remaining queue is rotated rather than truncated. Therefore, after
+        the selected video is processed, playback continues with the video that
+        originally followed it. Earlier unprocessed entries wrap to the end.
+        """
+        if self.queue_selection_in_progress or not self.queue:
+            return
+
+        selection = self.queue_list.curselection()
+        if not selection:
+            return
+
+        selected_index = int(selection[0])
+        if selected_index <= 0 or selected_index >= len(self.queue):
+            return
+
+        if self.busy or self.restarting:
+            self.queue_selection_in_progress = True
+            try:
+                self.queue_list.selection_clear(0, tk.END)
+                self.queue_list.selection_set(0)
+                self.queue_list.activate(0)
+            finally:
+                self.queue_selection_in_progress = False
+            self._set_status(
+                "Please wait for the current video transition."
+            )
+            return
+
+        selected_path = self.queue[selected_index]
+
+        self.queue_selection_in_progress = True
+        try:
+            self._cancel_transition()
+            self._release_current_media()
+
+            # Rotate so the clicked item becomes current while preserving every
+            # unprocessed video and the original forward order from that item.
+            self.queue = (
+                self.queue[selected_index:]
+                + self.queue[:selected_index]
+            )
+            self._populate_queue_list()
+            self._load_current_video()
+            self._set_status(
+                f"Jumped to {selected_path.name}. "
+                "Processing will continue from this point."
+            )
+        finally:
+            self.queue_selection_in_progress = False
+
     def _bind_keys(self) -> None:
         self.root.bind_all("<KeyPress>", self._on_key_press, add="+")
         self.root.bind_all("<KeyRelease>", self._on_key_release, add="+")
@@ -1233,16 +1384,24 @@ class VideoQueueReviewer:
         self.queue = sorted(videos, key=natural_sort_key)
 
     def _populate_queue_list(self) -> None:
-        self.queue_list.delete(0, tk.END)
-        if self.queue:
-            items = [
-                ("▶ " if index == 0 else "   ") + path.name
-                for index, path in enumerate(self.queue)
-            ]
-            # One Tcl call is much faster than inserting one item at a time.
-            self.queue_list.insert(tk.END, *items)
-            self.queue_list.selection_set(0)
-            self.queue_list.activate(0)
+        previous_guard = self.queue_selection_in_progress
+        self.queue_selection_in_progress = True
+
+        try:
+            self.queue_list.delete(0, tk.END)
+            if self.queue:
+                items = [
+                    ("▶ " if index == 0 else "   ") + path.name
+                    for index, path in enumerate(self.queue)
+                ]
+                # One Tcl call is much faster than inserting one item at a time.
+                self.queue_list.insert(tk.END, *items)
+                self.queue_list.selection_set(0)
+                self.queue_list.activate(0)
+                self.queue_list.see(0)
+        finally:
+            self.queue_selection_in_progress = previous_guard
+
         self.queue_count_var.set(f"Queue: {len(self.queue)}")
 
     def _remove_finished_queue_item(self, source: Path) -> None:
@@ -1265,10 +1424,15 @@ class VideoQueueReviewer:
             if self.queue_list.size():
                 self.queue_list.delete(0)
             self.queue_list.insert(0, "▶ " + self.queue[0].name)
-            self.queue_list.selection_clear(0, tk.END)
-            self.queue_list.selection_set(0)
-            self.queue_list.activate(0)
-            self.queue_list.see(0)
+            previous_guard = self.queue_selection_in_progress
+            self.queue_selection_in_progress = True
+            try:
+                self.queue_list.selection_clear(0, tk.END)
+                self.queue_list.selection_set(0)
+                self.queue_list.activate(0)
+                self.queue_list.see(0)
+            finally:
+                self.queue_selection_in_progress = previous_guard
 
         self.queue_count_var.set(f"Queue: {len(self.queue)}")
 
@@ -1948,10 +2112,11 @@ class VideoQueueReviewer:
         label = f"Background jobs: {count}"
         self.background_count_var.set(label)
 
-        # Some Tk builds do not support LabelFrame(textvariable=...).
-        # Updating its text option directly works across older and newer Tk.
-        if hasattr(self, "background_frame"):
-            self.background_frame.configure(text=label)
+        arrow = "▶" if self.background_collapsed else "▼"
+        if hasattr(self, "background_toggle_button"):
+            self.background_toggle_button.configure(
+                text=f"{arrow} {label}"
+            )
 
     def _start_next_background_job(self) -> None:
         if (
