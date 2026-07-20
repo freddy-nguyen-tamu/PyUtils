@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -760,8 +761,16 @@ class VideoQueueReviewer:
         self.toast_after_id = None
 
         self.ffmpeg_path = FFMPEG_EXECUTABLE
+
+        # One background worker processes jobs sequentially. Enqueuing is
+        # instant, so the UI remains available while extraction/encoding runs.
+        self.background_jobs: deque[dict] = deque()
+        self.active_background_job: dict | None = None
         self.export_process: subprocess.Popen | None = None
         self.export_context: dict | None = None
+        self.next_background_job_id = 1
+        self.reserved_output_paths: set[str] = set()
+
         self.last_clip_field = "start"
 
         self.status_var = tk.StringVar(value="Starting…")
@@ -771,6 +780,7 @@ class VideoQueueReviewer:
         self.duration_var = tk.StringVar(value="00:00")
         self.clip_start_var = tk.StringVar(value="")
         self.clip_end_var = tk.StringVar(value="")
+        self.background_count_var = tk.StringVar(value="Jobs: 0")
 
         self._build_ui()
         self.root.update_idletasks()
@@ -855,7 +865,8 @@ class VideoQueueReviewer:
         side = ttk.Frame(main)
         side.grid(row=1, column=1, sticky="nsew")
         side.columnconfigure(0, weight=1)
-        side.rowconfigure(2, weight=1)
+        side.rowconfigure(2, weight=3)
+        side.rowconfigure(3, weight=1)
 
         ttk.Label(
             side,
@@ -874,6 +885,7 @@ class VideoQueueReviewer:
             "Home  Beginning\n"
             "Shift+Space  Save frame + stay\n\n"
             "Timeline: click or drag to seek\n"
+            "Frame saves are queued in background\n"
             "Clip: focus Start/End, then use current time"
         )
         ttk.Label(
@@ -905,6 +917,47 @@ class VideoQueueReviewer:
         )
         queue_scroll.grid(row=0, column=1, sticky="ns")
         self.queue_list.configure(yscrollcommand=queue_scroll.set)
+
+        self.background_frame = ttk.LabelFrame(
+            side,
+            text="Background jobs: 0",
+        )
+        self.background_frame.grid(
+            row=3,
+            column=0,
+            sticky="nsew",
+            pady=(8, 0),
+        )
+        self.background_frame.columnconfigure(0, weight=1)
+        self.background_frame.rowconfigure(0, weight=1)
+
+        self.background_list = tk.Listbox(
+            self.background_frame,
+            height=6,
+            activestyle="none",
+            exportselection=False,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        self.background_list.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+        )
+
+        background_scroll = ttk.Scrollbar(
+            self.background_frame,
+            orient="vertical",
+            command=self.background_list.yview,
+        )
+        background_scroll.grid(
+            row=0,
+            column=1,
+            sticky="ns",
+        )
+        self.background_list.configure(
+            yscrollcommand=background_scroll.set
+        )
 
         buttons = ttk.Frame(main)
         buttons.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(7, 0))
@@ -1611,56 +1664,115 @@ class VideoQueueReviewer:
             self.root.after_idle(on_ready)
 
     # ------------------------------------------------------------------
-    # Actions and frame capture
+    # Actions and background job queue
     # ------------------------------------------------------------------
 
     def _action_allowed(self) -> bool:
         if self.busy:
-            self._set_status("Please wait for the current file operation.")
-            return False
-        if self.capture_busy or self.export_process is not None:
-            self._set_status("Please wait for the current export to finish.")
+            self._set_status(
+                "Please wait for the current video transition."
+            )
             return False
         if not self.queue:
             self._set_status("The queue is empty.")
             return False
         return True
 
+    def _frame_request_allowed(self) -> bool:
+        if self.busy:
+            self._set_status(
+                "Please wait for the current video transition."
+            )
+            return False
+        if not self.queue:
+            self._set_status("The queue is empty.")
+            return False
+        if not FRAME_HELPER_PATH.is_file():
+            messagebox.showerror(
+                "Frame helper missing",
+                "save_video_frame.py must be in the same folder as "
+                "video_queue_reviewer.py.\n\n"
+                f"Expected location:\n{FRAME_HELPER_PATH}",
+            )
+            self._set_status("Frame helper script was not found.")
+            return False
+        return True
+
     def keep_and_next(self) -> None:
-        if self._action_allowed():
-            self._begin_rename_and_advance(KEEP_PREFIX)
+        if not self._action_allowed():
+            return
+
+        source = self.queue[0]
+        self._enqueue_background_job(
+            {
+                "kind": "rename",
+                "source": source,
+                "prefix": KEEP_PREFIX,
+                "description": f"Keep: {source.name}",
+            },
+            start_immediately=False,
+        )
+        self._advance_current_immediately(source)
+        self._start_next_background_job()
 
     def capture_mark_delete_and_next(self) -> None:
-        if not self._action_allowed():
+        if not self._frame_request_allowed():
             return
 
+        source = self.queue[0]
         requested_ms = self._capture_timestamp_now()
+        last_frame = self._capture_is_last_frame()
 
-        def after_saved(snapshot_path: Path) -> None:
-            self._begin_rename_and_advance(
-                DELETE_SAVED_FRAME_PREFIX,
-                prior_message=f"✓ Saved frame: {snapshot_path.name}",
-            )
+        queued = self._queue_frame_job(
+            source,
+            requested_ms,
+            last_frame=last_frame,
+            rename_prefix_after_success=(
+                DELETE_SAVED_FRAME_PREFIX
+            ),
+            start_immediately=False,
+        )
+        if not queued:
+            return
 
-        self._save_current_frame(requested_ms, after_saved)
+        # The source remains at its original path until this frame job reaches
+        # the front of the background queue and succeeds. The UI can already
+        # move on to the next video.
+        self._advance_current_immediately(source)
+        self._start_next_background_job()
 
     def capture_and_stay(self) -> None:
+        if not self._frame_request_allowed():
+            return
+
+        source = self.queue[0]
+        requested_ms = self._capture_timestamp_now()
+        self._queue_frame_job(
+            source,
+            requested_ms,
+            last_frame=self._capture_is_last_frame(),
+        )
+
+    def mark_delete_and_next(self) -> None:
         if not self._action_allowed():
             return
 
-        requested_ms = self._capture_timestamp_now()
-        self._save_current_frame(requested_ms)
-
-    def mark_delete_and_next(self) -> None:
-        if self._action_allowed():
-            self._begin_rename_and_advance(DELETE_NO_FRAME_PREFIX)
+        source = self.queue[0]
+        self._enqueue_background_job(
+            {
+                "kind": "rename",
+                "source": source,
+                "prefix": DELETE_NO_FRAME_PREFIX,
+                "description": f"Mark delete: {source.name}",
+            },
+            start_immediately=False,
+        )
+        self._advance_current_immediately(source)
+        self._start_next_background_job()
 
     def _capture_timestamp_now(self) -> int:
         """
-        Read the playback timestamp at the key/button event.
-
-        Normal playback is not paused. At Ended, the last decodable frame is
-        used because the exact duration boundary is not itself a video frame.
+        Capture the timestamp at the key/button event without pausing playback.
         """
         state = self.player.get_state()
         if self.at_end or state == vlc.State.Ended:
@@ -1671,66 +1783,68 @@ class VideoQueueReviewer:
             return current
         return self._estimated_time_ms()
 
+    def _capture_is_last_frame(self) -> bool:
+        state = self.player.get_state()
+        return self.at_end or state == vlc.State.Ended
+
     def _require_ffmpeg(self) -> bool:
         if self.ffmpeg_path is not None and self.ffmpeg_path.is_file():
             return True
 
         messagebox.showerror(
             "FFmpeg is required",
-            "Exact frame saving and clip export require ffmpeg.exe.\n\n"
+            "Frame extraction and clip export require ffmpeg.exe.\n\n"
             "Install FFmpeg and add its bin folder to PATH, set FFMPEG_DIR, "
             "or set FFMPEG_DIRECTORY_OVERRIDE near the top of this script.",
         )
         self._set_status("FFmpeg was not found.")
         return False
 
-    def _capture_is_last_frame(self) -> bool:
-        state = self.player.get_state()
-        return self.at_end or state == vlc.State.Ended
+    def _reserved_path_key(self, path: Path) -> str:
+        try:
+            normalized = path.resolve()
+        except OSError:
+            normalized = path
+        return os.fspath(normalized).casefold()
 
-    def _save_current_frame(
+    def _unique_reserved_path(self, path: Path) -> Path:
+        counter = 1
+        candidate = path
+
+        while (
+            candidate.exists()
+            or self._reserved_path_key(candidate)
+            in self.reserved_output_paths
+        ):
+            counter += 1
+            candidate = path.with_name(
+                f"{path.stem}_{counter}{path.suffix}"
+            )
+
+        self.reserved_output_paths.add(
+            self._reserved_path_key(candidate)
+        )
+        return candidate
+
+    def _release_reserved_path(self, path: Path | None) -> None:
+        if isinstance(path, Path):
+            self.reserved_output_paths.discard(
+                self._reserved_path_key(path)
+            )
+
+    def _queue_frame_job(
         self,
+        source: Path,
         requested_ms: int,
-        after_saved=None,
-    ) -> None:
-        """
-        Delegate frame extraction to save_video_frame.py.
-
-        The helper is a separate Python process. It receives only:
-          1. the source video path,
-          2. a timestamp or the word "last",
-          3. the output PNG path.
-
-        It never seeks, restarts, pauses, or reads frames from VLC.
-        """
-        if self.closed or not self.queue:
-            return
-
-        if self.export_process is not None:
-            self._set_status(
-                "Please wait for the current export to finish."
-            )
-            return
-
+        *,
+        last_frame: bool,
+        rename_prefix_after_success: str | None = None,
+        start_immediately: bool = True,
+    ) -> bool:
         if not FRAME_HELPER_PATH.is_file():
-            messagebox.showerror(
-                "Frame helper missing",
-                "save_video_frame.py must be in the same folder as "
-                "video_queue_reviewer.py.\n\n"
-                f"Expected location:\n{FRAME_HELPER_PATH}",
-            )
-            self._set_status("Frame helper script was not found.")
-            return
+            return False
 
-        self.capture_busy = True
-        self.capture_id += 1
-
-        video_path = self.queue[0]
-        last_frame = self._capture_is_last_frame()
         timestamp_ms = max(0, int(requested_ms))
-
-        # The helper receives "last" instead of the VLC duration. It uses
-        # ffprobe to find the timestamp of the actual final decoded frame.
         timestamp_argument = (
             "last"
             if last_frame
@@ -1747,9 +1861,9 @@ class VideoQueueReviewer:
             else timestamp_ms
         )
 
-        final_path = unique_path(
-            video_path.with_name(
-                f"{video_path.stem}_"
+        final_path = self._unique_reserved_path(
+            source.with_name(
+                f"{source.stem}_"
                 f"{format_playback_timestamp(timestamp_label_ms)}"
                 f"{SNAPSHOT_EXTENSION}"
             )
@@ -1758,13 +1872,11 @@ class VideoQueueReviewer:
         command = [
             sys.executable,
             os.fspath(FRAME_HELPER_PATH),
-            os.fspath(video_path),
+            os.fspath(source),
             timestamp_argument,
             os.fspath(final_path),
         ]
 
-        # Passing the already-discovered FFmpeg path avoids searching again.
-        # The helper automatically uses ffprobe.exe beside ffmpeg.exe.
         if self.ffmpeg_path is not None and self.ffmpeg_path.is_file():
             command.extend(
                 (
@@ -1773,37 +1885,117 @@ class VideoQueueReviewer:
                 )
             )
 
-        context = {
-            "kind": "frame-helper",
-            "video_path": video_path,
-            "final_path": final_path,
-            "after_saved": after_saved,
-            "timestamp_argument": timestamp_argument,
-        }
-
-        label = (
-            "actual last decoded frame"
+        timestamp_label = (
+            "last frame"
             if last_frame
             else format_entry_timestamp(timestamp_ms)
         )
 
-        self._start_frame_helper(
-            command,
-            context,
-            status=f"Saving {label}…",
+        self._enqueue_background_job(
+            {
+                "kind": "frame",
+                "source": source,
+                "command": command,
+                "final_path": final_path,
+                "timestamp_argument": timestamp_argument,
+                "rename_prefix_after_success": (
+                    rename_prefix_after_success
+                ),
+                "description": (
+                    f"Frame: {source.name} @ {timestamp_label}"
+                ),
+            },
+            start_immediately=start_immediately,
+        )
+        return True
+
+    def _enqueue_background_job(
+        self,
+        job: dict,
+        *,
+        start_immediately: bool = True,
+    ) -> None:
+        job["id"] = self.next_background_job_id
+        self.next_background_job_id += 1
+        job.setdefault("status", "Waiting")
+
+        self.background_jobs.append(job)
+        self.background_list.insert(
+            tk.END,
+            f"… {job['description']}",
+        )
+        self._update_background_count()
+
+        position = len(self.background_jobs)
+        if self.active_background_job is not None:
+            position += 1
+
+        self._set_status(
+            f"Queued background job #{job['id']} "
+            f"(position {position}): {job['description']}"
         )
 
-    def _start_frame_helper(
-        self,
-        command: list[str],
-        context: dict,
-        *,
-        status: str,
-    ) -> None:
-        if self.export_process is not None:
-            self.capture_busy = False
-            self._set_status(
-                "Please wait for the current export to finish."
+        if start_immediately:
+            self.root.after_idle(
+                self._start_next_background_job
+            )
+
+    def _update_background_count(self) -> None:
+        count = len(self.background_jobs)
+        if self.active_background_job is not None:
+            count += 1
+
+        label = f"Background jobs: {count}"
+        self.background_count_var.set(label)
+
+        # Some Tk builds do not support LabelFrame(textvariable=...).
+        # Updating its text option directly works across older and newer Tk.
+        if hasattr(self, "background_frame"):
+            self.background_frame.configure(text=label)
+
+    def _start_next_background_job(self) -> None:
+        if (
+            self.closed
+            or self.active_background_job is not None
+            or self.export_process is not None
+            or not self.background_jobs
+        ):
+            return
+
+        job = self.background_jobs.popleft()
+        self.active_background_job = job
+        self.export_context = job
+
+        if self.background_list.size() > 0:
+            self.background_list.delete(0)
+            self.background_list.insert(
+                0,
+                f"▶ {job['description']}",
+            )
+            self.background_list.selection_clear(0, tk.END)
+            self.background_list.selection_set(0)
+            self.background_list.see(0)
+
+        self._update_background_count()
+        self._set_status(
+            f"Processing job #{job['id']}: "
+            f"{job['description']}"
+        )
+
+        kind = job.get("kind")
+        if kind == "rename":
+            self.root.after(
+                20,
+                lambda: self._run_active_rename_job(
+                    attempts_remaining=20
+                ),
+            )
+            return
+
+        command = job.get("command")
+        if not isinstance(command, list):
+            self._fail_active_background_job(
+                "The queued job has no valid command."
             )
             return
 
@@ -1833,27 +2025,29 @@ class VideoQueueReviewer:
             )
         except OSError as exc:
             self.export_process = None
-            self.capture_busy = False
-            messagebox.showerror(
-                "Frame helper could not start",
-                f"Could not start save_video_frame.py.\n\n{exc}",
+            self._fail_active_background_job(
+                f"Could not start the background process.\n\n{exc}"
             )
             return
 
-        self.export_context = context
-        self._set_status(status)
-        self.root.after(100, self._poll_frame_helper)
+        self.root.after(
+            100,
+            self._poll_active_background_process,
+        )
 
-    def _poll_frame_helper(self) -> None:
+    def _poll_active_background_process(self) -> None:
         process = self.export_process
-        context = self.export_context
+        job = self.active_background_job
 
-        if process is None or context is None:
+        if process is None or job is None:
             return
 
         return_code = process.poll()
         if return_code is None:
-            self.root.after(100, self._poll_frame_helper)
+            self.root.after(
+                100,
+                self._poll_active_background_process,
+            )
             return
 
         try:
@@ -1862,10 +2056,68 @@ class VideoQueueReviewer:
             stdout, stderr = "", ""
 
         self.export_process = None
-        self.export_context = None
-        self.capture_busy = False
 
-        final_path: Path = context["final_path"]
+        kind = job.get("kind")
+        if kind == "frame":
+            self._finish_frame_process(
+                job,
+                return_code,
+                stdout,
+                stderr,
+            )
+            return
+
+        if kind == "clip":
+            self._finish_clip_process(
+                job,
+                return_code,
+                stderr,
+            )
+            return
+
+        self._fail_active_background_job(
+            f"Unknown completed job type: {kind}"
+        )
+
+    def _read_helper_error(
+        self,
+        stdout: str,
+        stderr: str,
+    ) -> str:
+        raw_details = stderr.strip() or stdout.strip()
+        details = raw_details
+
+        if raw_details:
+            try:
+                payload = json.loads(raw_details)
+                if isinstance(payload, dict):
+                    details = str(
+                        payload.get("error")
+                        or payload.get("message")
+                        or raw_details
+                    )
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                pass
+
+        if len(details) > 4000:
+            details = details[-4000:]
+
+        return details or (
+            "The frame helper exited without creating a valid PNG."
+        )
+
+    def _finish_frame_process(
+        self,
+        job: dict,
+        return_code: int,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        final_path: Path = job["final_path"]
 
         try:
             valid_output = (
@@ -1876,38 +2128,9 @@ class VideoQueueReviewer:
             valid_output = False
 
         if return_code != 0 or not valid_output:
-            raw_details = stderr.strip() or stdout.strip()
-            details = raw_details
-
-            # The helper reports machine-readable JSON. Show only its human
-            # error text instead of displaying the raw JSON object.
-            if raw_details:
-                try:
-                    payload = json.loads(raw_details)
-                    if isinstance(payload, dict):
-                        details = str(
-                            payload.get("error")
-                            or payload.get("message")
-                            or raw_details
-                        )
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    pass
-
-            if len(details) > 4000:
-                details = details[-4000:]
-
-            if not details:
-                details = (
-                    "The frame helper exited without creating a "
-                    "valid PNG file."
-                )
-
-            self._set_status(
-                "Frame save failed; the video was not changed."
-            )
-            messagebox.showerror(
-                "Frame save failed",
-                details,
+            self._fail_active_background_job(
+                self._read_helper_error(stdout, stderr),
+                title="Frame save failed",
             )
             return
 
@@ -1916,11 +2139,202 @@ class VideoQueueReviewer:
             kind="Frame",
         )
 
-        after_saved = context.get("after_saved")
-        if after_saved is not None:
-            self.root.after_idle(
-                lambda: after_saved(final_path)
+        rename_prefix = job.get(
+            "rename_prefix_after_success"
+        )
+        if rename_prefix:
+            job["prefix"] = rename_prefix
+            job["rename_target"] = None
+            self._set_status(
+                f"Frame saved; marking {job['source'].name}…"
             )
+            self.root.after(
+                10,
+                lambda: self._run_active_rename_job(
+                    attempts_remaining=20
+                ),
+            )
+            return
+
+        self._complete_active_background_job()
+
+    def _finish_clip_process(
+        self,
+        job: dict,
+        return_code: int,
+        stderr: str,
+    ) -> None:
+        temporary_path: Path = job["temporary_path"]
+        final_path: Path = job["final_path"]
+
+        if return_code != 0:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+            detail = (
+                stderr.strip()[-3000:]
+                or "FFmpeg returned an unknown error."
+            )
+            self._fail_active_background_job(
+                detail,
+                title="Clip export failed",
+            )
+            return
+
+        try:
+            valid = (
+                temporary_path.is_file()
+                and temporary_path.stat().st_size > 0
+            )
+        except OSError:
+            valid = False
+
+        if not valid:
+            self._fail_active_background_job(
+                "FFmpeg finished without creating a valid clip.",
+                title="Clip export failed",
+            )
+            return
+
+        try:
+            shutil.move(
+                os.fspath(temporary_path),
+                os.fspath(final_path),
+            )
+        except OSError as exc:
+            self._fail_active_background_job(
+                f"The clip was created, but could not be moved to:\n"
+                f"{final_path}\n\n{exc}",
+                title="Clip export failed",
+            )
+            return
+
+        self._show_saved_notification(
+            final_path.name,
+            kind="Clip",
+        )
+        self._complete_active_background_job()
+
+    def _run_active_rename_job(
+        self,
+        *,
+        attempts_remaining: int,
+    ) -> None:
+        job = self.active_background_job
+        if job is None:
+            return
+
+        source: Path = job["source"]
+        prefix = str(job.get("prefix", ""))
+
+        target = job.get("rename_target")
+        if not isinstance(target, Path):
+            target = unique_path(
+                source.with_name(prefix + source.name)
+            )
+            job["rename_target"] = target
+
+        try:
+            source.rename(target)
+        except PermissionError:
+            if attempts_remaining > 0:
+                self.root.after(
+                    80,
+                    lambda: self._run_active_rename_job(
+                        attempts_remaining=(
+                            attempts_remaining - 1
+                        )
+                    ),
+                )
+                return
+
+            self._fail_active_background_job(
+                "Windows still reports the source video as in use:\n"
+                f"{source}",
+                title="Rename failed",
+            )
+            return
+        except FileNotFoundError:
+            self._fail_active_background_job(
+                "The source video no longer exists at:\n"
+                f"{source}",
+                title="Rename failed",
+            )
+            return
+        except OSError as exc:
+            self._fail_active_background_job(
+                f"Could not rename:\n{source.name}\n\n{exc}",
+                title="Rename failed",
+            )
+            return
+
+        self._set_status(f"Renamed to {target.name}")
+        self._complete_active_background_job()
+
+    def _complete_active_background_job(self) -> None:
+        job = self.active_background_job
+        if job is not None:
+            self._release_reserved_path(
+                job.get("final_path")
+            )
+
+        if self.background_list.size() > 0:
+            self.background_list.delete(0)
+
+        self.active_background_job = None
+        self.export_context = None
+        self.export_process = None
+        self._update_background_count()
+
+        self.root.after(
+            30,
+            self._start_next_background_job,
+        )
+
+    def _fail_active_background_job(
+        self,
+        message: str,
+        *,
+        title: str = "Background job failed",
+    ) -> None:
+        job = self.active_background_job
+
+        if job is not None:
+            temporary_path = job.get("temporary_path")
+            if isinstance(temporary_path, Path):
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        self._set_status(
+            f"{title}; continuing with the next queued job."
+        )
+        messagebox.showerror(title, message)
+        self._complete_active_background_job()
+
+    def _advance_current_immediately(
+        self,
+        source: Path,
+    ) -> None:
+        """
+        Detach the current VLC media and display the next video immediately.
+
+        Renaming is handled later by the ordered background queue, after any
+        frame requests that still need the original source path.
+        """
+        self.busy = True
+        self._cancel_transition()
+        self._release_current_media()
+        self._remove_finished_queue_item(source)
+        self.busy = False
+        self.root.after_idle(self._load_current_video)
+
+    # ------------------------------------------------------------------
+    # Clip controls
+    # ------------------------------------------------------------------
 
     def _remember_clip_field(self, field: str) -> None:
         self.last_clip_field = field
@@ -1942,9 +2356,6 @@ class VideoQueueReviewer:
             elif not self.clip_end_var.get().strip():
                 field = "end"
 
-        # Clip boundaries follow the visible playhead. At the completed state
-        # this is the full media duration; frame extraction separately uses the
-        # actual final decodable frame.
         state = self.player.get_state()
         if self.at_end or state == vlc.State.Ended:
             timestamp_ms = max(
@@ -1980,16 +2391,24 @@ class VideoQueueReviewer:
             return
 
         try:
-            start_ms = parse_entry_timestamp(self.clip_start_var.get())
-            end_ms = parse_entry_timestamp(self.clip_end_var.get())
+            start_ms = parse_entry_timestamp(
+                self.clip_start_var.get()
+            )
+            end_ms = parse_entry_timestamp(
+                self.clip_end_var.get()
+            )
         except ValueError as exc:
-            messagebox.showerror("Invalid clip timestamp", str(exc))
+            messagebox.showerror(
+                "Invalid clip timestamp",
+                str(exc),
+            )
             return
 
         if end_ms <= start_ms:
             messagebox.showerror(
                 "Invalid clip range",
-                "The ending timestamp must be later than the starting timestamp.",
+                "The ending timestamp must be later than "
+                "the starting timestamp.",
             )
             return
 
@@ -2001,50 +2420,50 @@ class VideoQueueReviewer:
         if length_ms > 0 and start_ms >= length_ms:
             messagebox.showerror(
                 "Invalid clip range",
-                "The starting timestamp is beyond the end of the video.",
+                "The starting timestamp is beyond the end "
+                "of the video.",
             )
             return
 
         if length_ms > 0:
             end_ms = min(end_ms, length_ms)
-            self.clip_end_var.set(format_entry_timestamp(end_ms))
+            self.clip_end_var.set(
+                format_entry_timestamp(end_ms)
+            )
 
-        video_path = self.queue[0]
-        final_path = unique_path(
-            video_path.with_name(
-                f"{video_path.stem}_clip_"
+        source = self.queue[0]
+        final_path = self._unique_reserved_path(
+            source.with_name(
+                f"{source.stem}_clip_"
                 f"{format_playback_timestamp(start_ms)}_to_"
                 f"{format_playback_timestamp(end_ms)}.mp4"
             )
         )
         temporary_path = final_path.with_name(
-            f".{final_path.stem}_{uuid.uuid4().hex}.temporary.mp4"
+            f".{final_path.stem}_{uuid.uuid4().hex}"
+            ".temporary.mp4"
         )
 
         command = self._build_clip_command(
-            video_path,
+            source,
             temporary_path,
             start_ms,
             end_ms,
         )
 
-        self.capture_busy = True
-        self.capture_id += 1
-        context = {
-            "kind": "clip",
-            "video_path": video_path,
-            "temporary_path": temporary_path,
-            "final_path": final_path,
-            "after_saved": None,
-        }
-
-        self._start_ffmpeg_export(
-            command,
-            context,
-            status=(
-                f"Saving clip {format_entry_timestamp(start_ms)} → "
-                f"{format_entry_timestamp(end_ms)}…"
-            ),
+        self._enqueue_background_job(
+            {
+                "kind": "clip",
+                "source": source,
+                "command": command,
+                "temporary_path": temporary_path,
+                "final_path": final_path,
+                "description": (
+                    f"Clip: {source.name} "
+                    f"{format_entry_timestamp(start_ms)} → "
+                    f"{format_entry_timestamp(end_ms)}"
+                ),
+            }
         )
 
     def _build_clip_command(
@@ -2097,209 +2516,6 @@ class VideoQueueReviewer:
             "make_zero",
             os.fspath(output_path),
         ]
-
-    def _start_ffmpeg_export(
-        self,
-        command: list[str],
-        context: dict,
-        *,
-        status: str,
-    ) -> None:
-        if self.export_process is not None:
-            self.capture_busy = False
-            self._set_status("Please wait for the current export to finish.")
-            return
-
-        temporary_path: Path = context["temporary_path"]
-        try:
-            temporary_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-        creation_flags = 0
-        if sys.platform == "win32":
-            creation_flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            creation_flags |= getattr(
-                subprocess,
-                "BELOW_NORMAL_PRIORITY_CLASS",
-                0,
-            )
-
-        try:
-            self.export_process = subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=creation_flags,
-            )
-        except OSError as exc:
-            self.export_process = None
-            self.capture_busy = False
-            messagebox.showerror(
-                "Export could not start",
-                f"Could not start FFmpeg.\n\n{exc}",
-            )
-            return
-
-        self.export_context = context
-        self._set_status(status)
-        self.root.after(120, self._poll_ffmpeg_export)
-
-    def _poll_ffmpeg_export(self) -> None:
-        process = self.export_process
-        context = self.export_context
-
-        if process is None or context is None:
-            return
-
-        return_code = process.poll()
-        if return_code is None:
-            self.root.after(120, self._poll_ffmpeg_export)
-            return
-
-        try:
-            stderr = process.stderr.read() if process.stderr is not None else ""
-        except OSError:
-            stderr = ""
-
-        self.export_process = None
-        self.export_context = None
-
-        temporary_path: Path = context["temporary_path"]
-        final_path: Path = context["final_path"]
-
-        if return_code != 0:
-            self.capture_busy = False
-            try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-            detail = stderr.strip()[-3000:] or "FFmpeg returned an unknown error."
-            self._set_status("Export failed; the video was not changed.")
-            messagebox.showerror("Export failed", detail)
-            return
-
-        try:
-            valid = (
-                temporary_path.is_file()
-                and temporary_path.stat().st_size > 0
-            )
-        except OSError:
-            valid = False
-
-        if not valid:
-            self.capture_busy = False
-            messagebox.showerror(
-                "Export failed",
-                "FFmpeg finished without creating a valid output file.",
-            )
-            return
-
-        try:
-            shutil.move(
-                os.fspath(temporary_path),
-                os.fspath(final_path),
-            )
-        except OSError as exc:
-            self.capture_busy = False
-            messagebox.showerror(
-                "Export failed",
-                f"The export was created, but could not be moved to:\n"
-                f"{final_path}\n\n{exc}",
-            )
-            return
-
-        self.capture_busy = False
-        kind = str(context.get("kind", "export"))
-        notification_kind = "Frame" if kind == "frame" else "Clip"
-        self._show_saved_notification(
-            final_path.name,
-            kind=notification_kind,
-        )
-
-        after_saved = context.get("after_saved")
-        if after_saved is not None:
-            self.root.after_idle(lambda: after_saved(final_path))
-
-    # ------------------------------------------------------------------
-    # Rename and advance
-    # ------------------------------------------------------------------
-
-    def _begin_rename_and_advance(
-        self,
-        prefix: str,
-        prior_message: str | None = None,
-    ) -> None:
-        if not self.queue:
-            return
-
-        self.busy = True
-        self.capture_busy = False
-        self.capture_id += 1
-        self._cancel_transition()
-
-        source = self.queue[0]
-        target = unique_path(source.with_name(prefix + source.name))
-
-        if prior_message:
-            self._set_status(f"{prior_message}; marking video…")
-        else:
-            self._set_status("Marking video…")
-
-        self._release_current_media()
-
-        # Usually Windows releases VLC's file handle quickly. Start early and
-        # retain retries for slower storage/codecs.
-        self.root.after(
-            70,
-            lambda: self._try_rename(source, target, attempts_remaining=15),
-        )
-
-    def _try_rename(
-        self,
-        source: Path,
-        target: Path,
-        attempts_remaining: int,
-    ) -> None:
-        try:
-            source.rename(target)
-        except PermissionError:
-            if attempts_remaining > 0:
-                self.root.after(
-                    80,
-                    lambda: self._try_rename(
-                        source,
-                        target,
-                        attempts_remaining - 1,
-                    ),
-                )
-                return
-
-            self.busy = False
-            self._set_status(
-                "Rename failed because Windows still reports the file as "
-                "in use. Press the action key again to retry."
-            )
-            self._load_current_video()
-            return
-        except OSError as exc:
-            self.busy = False
-            messagebox.showerror(
-                "Rename failed",
-                f"Could not rename:\n{source.name}\n\n{exc}",
-            )
-            self._set_status("Rename failed; the queue was not advanced.")
-            self._load_current_video()
-            return
-
-        self._remove_finished_queue_item(source)
-        self._set_status(f"Renamed to {target.name}")
-        self.root.after_idle(self._load_current_video)
 
     # ------------------------------------------------------------------
     # Low-overhead timeline updates and VLC events
@@ -2458,6 +2674,20 @@ class VideoQueueReviewer:
     # ------------------------------------------------------------------
 
     def close(self) -> None:
+        pending_count = len(self.background_jobs)
+        if self.active_background_job is not None:
+            pending_count += 1
+
+        if pending_count > 0:
+            should_close = messagebox.askyesno(
+                "Background jobs are pending",
+                f"{pending_count} background job(s) have not finished.\n\n"
+                "Closing now will cancel the active job and discard the "
+                "waiting jobs. Close anyway?",
+            )
+            if not should_close:
+                return
+
         self.closed = True
         self.capture_id += 1
 
