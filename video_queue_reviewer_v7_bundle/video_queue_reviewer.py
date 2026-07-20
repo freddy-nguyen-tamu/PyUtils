@@ -392,6 +392,12 @@ def _find_ffmpeg_executable() -> Path | None:
 
 FFMPEG_EXECUTABLE = _find_ffmpeg_executable()
 
+# Keep save_video_frame.py in the same folder as this UI script.
+# Every frame-saving request is delegated to that independent helper.
+FRAME_HELPER_PATH = Path(__file__).resolve().with_name(
+    "save_video_frame.py"
+)
+
 
 def natural_sort_key(path: Path) -> tuple:
     """Sort filenames naturally: video2 before video10."""
@@ -1687,14 +1693,32 @@ class VideoQueueReviewer:
         after_saved=None,
     ) -> None:
         """
-        Extract a frame with FFmpeg without seeking, restarting, or refreshing
-        the VLC viewport.
+        Delegate frame extraction to save_video_frame.py.
+
+        The helper is a separate Python process. It receives only:
+          1. the source video path,
+          2. a timestamp or the word "last",
+          3. the output PNG path.
+
+        It never seeks, restarts, pauses, or reads frames from VLC.
         """
-        if self.closed or not self.queue or not self._require_ffmpeg():
+        if self.closed or not self.queue:
             return
 
         if self.export_process is not None:
-            self._set_status("Please wait for the current export to finish.")
+            self._set_status(
+                "Please wait for the current export to finish."
+            )
+            return
+
+        if not FRAME_HELPER_PATH.is_file():
+            messagebox.showerror(
+                "Frame helper missing",
+                "save_video_frame.py must be in the same folder as "
+                "video_queue_reviewer.py.\n\n"
+                f"Expected location:\n{FRAME_HELPER_PATH}",
+            )
+            self._set_status("Frame helper script was not found.")
             return
 
         self.capture_busy = True
@@ -1703,6 +1727,14 @@ class VideoQueueReviewer:
         video_path = self.queue[0]
         last_frame = self._capture_is_last_frame()
         timestamp_ms = max(0, int(requested_ms))
+
+        # The helper receives "last" instead of the VLC duration. It uses
+        # ffprobe to find the timestamp of the actual final decoded frame.
+        timestamp_argument = (
+            "last"
+            if last_frame
+            else f"{timestamp_ms}ms"
+        )
 
         timestamp_label_ms = (
             max(
@@ -1721,84 +1753,157 @@ class VideoQueueReviewer:
                 f"{SNAPSHOT_EXTENSION}"
             )
         )
-        temporary_path = Path(tempfile.gettempdir()) / (
-            f"vqr_frame_{os.getpid()}_{uuid.uuid4().hex}.png"
-        )
 
-        command = self._build_frame_command(
-            video_path,
-            temporary_path,
-            timestamp_ms,
-            last_frame=last_frame,
-        )
+        command = [
+            sys.executable,
+            os.fspath(FRAME_HELPER_PATH),
+            os.fspath(video_path),
+            timestamp_argument,
+            os.fspath(final_path),
+        ]
+
+        # Passing the already-discovered FFmpeg path avoids searching again.
+        # The helper automatically uses ffprobe.exe beside ffmpeg.exe.
+        if self.ffmpeg_path is not None and self.ffmpeg_path.is_file():
+            command.extend(
+                (
+                    "--ffmpeg",
+                    os.fspath(self.ffmpeg_path),
+                )
+            )
 
         context = {
-            "kind": "frame",
+            "kind": "frame-helper",
             "video_path": video_path,
-            "temporary_path": temporary_path,
             "final_path": final_path,
             "after_saved": after_saved,
+            "timestamp_argument": timestamp_argument,
         }
 
-        label = "last frame" if last_frame else format_entry_timestamp(timestamp_ms)
-        self._start_ffmpeg_export(
-            command,
-            context,
-            status=f"Saving frame at {label}…",
+        label = (
+            "actual last decoded frame"
+            if last_frame
+            else format_entry_timestamp(timestamp_ms)
         )
 
-    def _build_frame_command(
+        self._start_frame_helper(
+            command,
+            context,
+            status=f"Saving {label}…",
+        )
+
+    def _start_frame_helper(
         self,
-        video_path: Path,
-        output_path: Path,
-        timestamp_ms: int,
+        command: list[str],
+        context: dict,
         *,
-        last_frame: bool,
-    ) -> list[str]:
-        base = [
-            os.fspath(self.ffmpeg_path),
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-nostdin",
-            "-y",
-        ]
+        status: str,
+    ) -> None:
+        if self.export_process is not None:
+            self.capture_busy = False
+            self._set_status(
+                "Please wait for the current export to finish."
+            )
+            return
 
-        if last_frame:
-            # Reverse only the final two seconds and output the first reversed
-            # frame. This yields the actual final decoded frame.
-            return base + [
-                "-sseof",
-                "-2",
-                "-i",
-                os.fspath(video_path),
-                "-map",
-                "0:v:0",
-                "-an",
-                "-vf",
-                "reverse",
-                "-frames:v",
-                "1",
-                os.fspath(output_path),
-            ]
+        creation_flags = 0
+        if sys.platform == "win32":
+            creation_flags |= getattr(
+                subprocess,
+                "CREATE_NO_WINDOW",
+                0,
+            )
+            creation_flags |= getattr(
+                subprocess,
+                "BELOW_NORMAL_PRIORITY_CLASS",
+                0,
+            )
 
-        preroll_ms = min(max(0, int(timestamp_ms)), 2_000)
-        input_seek_ms = max(0, int(timestamp_ms) - preroll_ms)
+        try:
+            self.export_process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=creation_flags,
+            )
+        except OSError as exc:
+            self.export_process = None
+            self.capture_busy = False
+            messagebox.showerror(
+                "Frame helper could not start",
+                f"Could not start save_video_frame.py.\n\n{exc}",
+            )
+            return
 
-        return base + [
-            "-ss",
-            ffmpeg_seconds(input_seek_ms),
-            "-i",
-            os.fspath(video_path),
-            "-ss",
-            ffmpeg_seconds(preroll_ms),
-            "-map",
-            "0:v:0",
-            "-an",
-            "-frames:v",
-            "1",
-            os.fspath(output_path),
-        ]
+        self.export_context = context
+        self._set_status(status)
+        self.root.after(100, self._poll_frame_helper)
+
+    def _poll_frame_helper(self) -> None:
+        process = self.export_process
+        context = self.export_context
+
+        if process is None or context is None:
+            return
+
+        return_code = process.poll()
+        if return_code is None:
+            self.root.after(100, self._poll_frame_helper)
+            return
+
+        try:
+            stdout, stderr = process.communicate()
+        except OSError:
+            stdout, stderr = "", ""
+
+        self.export_process = None
+        self.export_context = None
+        self.capture_busy = False
+
+        final_path: Path = context["final_path"]
+
+        try:
+            valid_output = (
+                final_path.is_file()
+                and final_path.stat().st_size > 0
+            )
+        except OSError:
+            valid_output = False
+
+        if return_code != 0 or not valid_output:
+            details = stderr.strip() or stdout.strip()
+            if len(details) > 4000:
+                details = details[-4000:]
+
+            if not details:
+                details = (
+                    "The frame helper exited without creating a "
+                    "valid PNG file."
+                )
+
+            self._set_status(
+                "Frame save failed; the video was not changed."
+            )
+            messagebox.showerror(
+                "Frame save failed",
+                details,
+            )
+            return
+
+        self._show_saved_notification(
+            final_path.name,
+            kind="Frame",
+        )
+
+        after_saved = context.get("after_saved")
+        if after_saved is not None:
+            self.root.after_idle(
+                lambda: after_saved(final_path)
+            )
 
     def _remember_clip_field(self, field: str) -> None:
         self.last_clip_field = field
