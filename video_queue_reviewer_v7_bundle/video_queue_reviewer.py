@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import struct
@@ -1875,7 +1876,23 @@ class VideoQueueReviewer:
             valid_output = False
 
         if return_code != 0 or not valid_output:
-            details = stderr.strip() or stdout.strip()
+            raw_details = stderr.strip() or stdout.strip()
+            details = raw_details
+
+            # The helper reports machine-readable JSON. Show only its human
+            # error text instead of displaying the raw JSON object.
+            if raw_details:
+                try:
+                    payload = json.loads(raw_details)
+                    if isinstance(payload, dict):
+                        details = str(
+                            payload.get("error")
+                            or payload.get("message")
+                            or raw_details
+                        )
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+
             if len(details) > 4000:
                 details = details[-4000:]
 
