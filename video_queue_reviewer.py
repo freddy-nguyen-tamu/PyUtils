@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -293,6 +294,104 @@ SNAPSHOT_EXTENSION = ".png"
 # Prevent already-processed videos from returning to the queue after restart.
 SKIP_ALREADY_PROCESSED = True
 
+# Exact frame extraction and clip export use FFmpeg. This avoids disturbing
+# VLC playback and fixes wrong-frame/keyframe behavior near the video end.
+#
+# Set this when ffmpeg.exe is not on PATH:
+#     FFMPEG_DIRECTORY_OVERRIDE = Path(r"C:\ffmpeg\bin")
+#
+FFMPEG_DIRECTORY_OVERRIDE: Path | None = None
+
+
+def _find_ffmpeg_executable() -> Path | None:
+    candidates: list[Path] = []
+
+    if FFMPEG_DIRECTORY_OVERRIDE is not None:
+        override = Path(FFMPEG_DIRECTORY_OVERRIDE)
+        candidates.append(
+            override if override.name.casefold() == "ffmpeg.exe"
+            else override / "ffmpeg.exe"
+        )
+
+    for variable_name in ("FFMPEG_DIR", "FFMPEG_HOME"):
+        value = os.environ.get(variable_name)
+        if value:
+            directory = Path(value)
+            candidates.extend(
+                (
+                    directory / "ffmpeg.exe",
+                    directory / "bin" / "ffmpeg.exe",
+                )
+            )
+
+    discovered = shutil.which("ffmpeg.exe") or shutil.which("ffmpeg")
+    if discovered:
+        candidates.append(Path(discovered))
+
+    user_profile = os.environ.get("USERPROFILE")
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    program_files = os.environ.get("ProgramFiles")
+    program_data = os.environ.get("ProgramData")
+
+    if user_profile:
+        candidates.extend(
+            (
+                Path(user_profile) / "scoop" / "shims" / "ffmpeg.exe",
+                Path(user_profile) / "AppData" / "Local"
+                / "Microsoft" / "WinGet" / "Links" / "ffmpeg.exe",
+            )
+        )
+
+    if local_app_data:
+        candidates.extend(
+            (
+                Path(local_app_data) / "Microsoft" / "WinGet"
+                / "Links" / "ffmpeg.exe",
+                Path(local_app_data) / "Programs" / "ffmpeg"
+                / "bin" / "ffmpeg.exe",
+            )
+        )
+
+    if program_files:
+        candidates.extend(
+            (
+                Path(program_files) / "ffmpeg" / "bin" / "ffmpeg.exe",
+                Path(program_files) / "FFmpeg" / "bin" / "ffmpeg.exe",
+            )
+        )
+
+    if program_data:
+        candidates.append(
+            Path(program_data) / "chocolatey" / "bin" / "ffmpeg.exe"
+        )
+
+    candidates.extend(
+        (
+            Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
+            Path(r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"),
+        )
+    )
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            normalized = candidate.expanduser().resolve()
+        except OSError:
+            normalized = candidate.expanduser()
+
+        key = os.fspath(normalized).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if normalized.is_file():
+            return normalized
+
+    return None
+
+
+FFMPEG_EXECUTABLE = _find_ffmpeg_executable()
+
 
 def natural_sort_key(path: Path) -> tuple:
     """Sort filenames naturally: video2 before video10."""
@@ -338,6 +437,57 @@ def format_clock(milliseconds: int) -> str:
     if hours:
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def format_entry_timestamp(milliseconds: int) -> str:
+    """Format a timestamp for the clip input fields."""
+    milliseconds = max(0, int(milliseconds))
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, millis = divmod(remainder, 1_000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
+
+
+def parse_entry_timestamp(value: str) -> int:
+    """Parse SS, MM:SS, HH:MM:SS.mmm, or HH-MM-SS-mmm."""
+    value = value.strip()
+    if not value:
+        raise ValueError("Timestamp is empty.")
+
+    if ":" not in value and value.count("-") == 3:
+        hours, minutes, seconds, millis = value.split("-")
+        value = f"{hours}:{minutes}:{seconds}.{millis}"
+
+    parts = value.split(":")
+    if len(parts) > 3:
+        raise ValueError("Use SS, MM:SS, or HH:MM:SS.mmm.")
+
+    try:
+        numeric = [float(part.strip()) for part in parts]
+    except ValueError as exc:
+        raise ValueError("Timestamp contains invalid characters.") from exc
+
+    if len(numeric) == 1:
+        total_seconds = numeric[0]
+    elif len(numeric) == 2:
+        minutes, seconds = numeric
+        if not 0 <= seconds < 60:
+            raise ValueError("Seconds must be below 60.")
+        total_seconds = (minutes * 60) + seconds
+    else:
+        hours, minutes, seconds = numeric
+        if not 0 <= minutes < 60 or not 0 <= seconds < 60:
+            raise ValueError("Minutes and seconds must be below 60.")
+        total_seconds = (hours * 3600) + (minutes * 60) + seconds
+
+    if total_seconds < 0:
+        raise ValueError("Timestamp cannot be negative.")
+
+    return int(round(total_seconds * 1000))
+
+
+def ffmpeg_seconds(milliseconds: int) -> str:
+    return f"{max(0, int(milliseconds)) / 1000.0:.3f}"
 
 
 class SmoothTimeline(tk.Canvas):
@@ -585,6 +735,15 @@ class VideoQueueReviewer:
         self.cached_length_ms = 0
         self.cached_playing = False
         self.sample_clock = time.perf_counter()
+
+        # VLC samples can arrive slightly late. The visible playhead uses a
+        # separate monotonic clock, so it never jitters backward during normal
+        # forward playback.
+        self.display_time_ms = 0.0
+        self.timeline_target_ms = 0.0
+        self.last_animation_clock = time.perf_counter()
+        self.ignore_stale_poll_until = 0.0
+
         self.last_known_fps = 0.0
         self.last_displayed_second = -1
         self.last_displayed_duration_second = -1
@@ -593,11 +752,18 @@ class VideoQueueReviewer:
         self.drag_seek_after_id = None
         self.toast_after_id = None
 
+        self.ffmpeg_path = FFMPEG_EXECUTABLE
+        self.export_process: subprocess.Popen | None = None
+        self.export_context: dict | None = None
+        self.last_clip_field = "start"
+
         self.status_var = tk.StringVar(value="Starting…")
         self.current_file_var = tk.StringVar(value="No video loaded")
         self.queue_count_var = tk.StringVar(value="Queue: 0")
         self.current_time_var = tk.StringVar(value="00:00")
         self.duration_var = tk.StringVar(value="00:00")
+        self.clip_start_var = tk.StringVar(value="")
+        self.clip_end_var = tk.StringVar(value="")
 
         self._build_ui()
         self.root.update_idletasks()
@@ -700,7 +866,8 @@ class VideoQueueReviewer:
             "J / L  Seek 10 seconds\n"
             "Home  Beginning\n"
             "Shift+Space  Save frame + stay\n\n"
-            "Timeline: click or drag to seek"
+            "Timeline: click or drag to seek\n"
+            "Clip: focus Start/End, then use current time"
         )
         ttk.Label(
             side,
@@ -757,9 +924,78 @@ class VideoQueueReviewer:
                 padx=(0 if column == 0 else 3, 0 if column == 4 else 3),
             )
 
+        clip_row = ttk.LabelFrame(main, text="Save video segment")
+        clip_row.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(6, 0),
+        )
+        clip_row.columnconfigure(1, weight=1)
+        clip_row.columnconfigure(3, weight=1)
+
+        ttk.Label(clip_row, text="Start").grid(
+            row=0, column=0, padx=(8, 4), pady=6
+        )
+        self.clip_start_entry = ttk.Entry(
+            clip_row,
+            textvariable=self.clip_start_var,
+            width=18,
+        )
+        self.clip_start_entry.grid(
+            row=0, column=1, sticky="ew", padx=(0, 8), pady=6
+        )
+        self.clip_start_entry.bind(
+            "<FocusIn>",
+            lambda _event: self._remember_clip_field("start"),
+        )
+
+        ttk.Label(clip_row, text="End").grid(
+            row=0, column=2, padx=(0, 4), pady=6
+        )
+        self.clip_end_entry = ttk.Entry(
+            clip_row,
+            textvariable=self.clip_end_var,
+            width=18,
+        )
+        self.clip_end_entry.grid(
+            row=0, column=3, sticky="ew", padx=(0, 8), pady=6
+        )
+        self.clip_end_entry.bind(
+            "<FocusIn>",
+            lambda _event: self._remember_clip_field("end"),
+        )
+
+        ttk.Button(
+            clip_row,
+            text="Use Current Time",
+            command=self.set_current_time_in_focused_clip_field,
+            takefocus=False,
+        ).grid(row=0, column=4, padx=(0, 6), pady=6)
+
+        ttk.Button(
+            clip_row,
+            text="Save Clip",
+            command=self.save_video_clip,
+            takefocus=False,
+        ).grid(row=0, column=5, padx=(0, 8), pady=6)
+
+        ttk.Label(
+            clip_row,
+            text="Format: HH:MM:SS.mmm",
+        ).grid(
+            row=1,
+            column=0,
+            columnspan=6,
+            sticky="w",
+            padx=8,
+            pady=(0, 5),
+        )
+
         timeline_row = ttk.Frame(main)
         timeline_row.grid(
-            row=3,
+            row=4,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -789,7 +1025,7 @@ class VideoQueueReviewer:
             textvariable=self.status_var,
             anchor="w",
         ).grid(
-            row=4,
+            row=5,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -801,7 +1037,7 @@ class VideoQueueReviewer:
             text=f"Folder: {VIDEO_FOLDER}",
             anchor="w",
         ).grid(
-            row=5,
+            row=6,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -824,9 +1060,14 @@ class VideoQueueReviewer:
         if self.status_var.get() != text:
             self.status_var.set(text)
 
-    def _show_saved_notification(self, filename: str) -> None:
-        self._set_status(f"✓ Saved frame: {filename}")
-        self.toast_label.configure(text=f"✓ Frame saved\n{filename}")
+    def _show_saved_notification(
+        self,
+        filename: str,
+        *,
+        kind: str = "Frame",
+    ) -> None:
+        self._set_status(f"✓ Saved {kind.casefold()}: {filename}")
+        self.toast_label.configure(text=f"✓ {kind} saved\n{filename}")
         self.toast_label.place(relx=0.985, rely=0.02, anchor="ne")
         self.toast_label.lift()
 
@@ -986,6 +1227,10 @@ class VideoQueueReviewer:
         self.cached_length_ms = 0
         self.cached_playing = False
         self.sample_clock = time.perf_counter()
+        self.display_time_ms = 0.0
+        self.timeline_target_ms = 0.0
+        self.last_animation_clock = time.perf_counter()
+        self.ignore_stale_poll_until = 0.0
         self.last_known_fps = 0.0
         self.last_displayed_second = -1
         self.last_displayed_duration_second = -1
@@ -1054,14 +1299,31 @@ class VideoQueueReviewer:
         if self.timeline.dragging:
             return self.timeline.position_ms
 
-        position = self.cached_time_ms
-        if self.cached_playing and not self.at_end:
-            elapsed = max(0.0, time.perf_counter() - self.sample_clock)
-            position += int(elapsed * 1000)
-
+        position = int(round(self.display_time_ms))
         if self.cached_length_ms > 0:
             position = min(position, self.cached_length_ms)
         return max(0, position)
+
+    def _set_playhead_position(
+        self,
+        position_ms: int,
+        *,
+        ignore_stale_polls: bool = False,
+    ) -> None:
+        position_ms = max(0, int(position_ms))
+        if self.cached_length_ms > 0:
+            position_ms = min(position_ms, self.cached_length_ms)
+
+        self.cached_time_ms = position_ms
+        self.timeline_target_ms = float(position_ms)
+        self.display_time_ms = float(position_ms)
+        self.sample_clock = time.perf_counter()
+        self.last_animation_clock = self.sample_clock
+
+        if ignore_stale_polls:
+            self.ignore_stale_poll_until = self.sample_clock + 0.65
+
+        self.timeline.set_position(position_ms)
 
     def _last_frame_position(self) -> int:
         length_ms = max(self.cached_length_ms, int(self.player.get_length()), 0)
@@ -1094,9 +1356,8 @@ class VideoQueueReviewer:
         if self.player.is_playing():
             current = max(0, int(self.player.get_time()))
             self.player.set_pause(1)
-            self.cached_time_ms = current
+            self._set_playhead_position(current)
             self.cached_playing = False
-            self.sample_clock = time.perf_counter()
             self._set_status("Paused.")
         else:
             if state in {
@@ -1108,10 +1369,10 @@ class VideoQueueReviewer:
             else:
                 self.player.set_pause(0)
 
-            self.cached_time_ms = max(0, int(self.player.get_time()))
+            current = max(0, int(self.player.get_time()))
+            self._set_playhead_position(current)
             self.cached_playing = True
             self.at_end = False
-            self.sample_clock = time.perf_counter()
             self._set_status("Playing.")
 
     def seek_relative(self, offset_ms: int) -> None:
@@ -1140,17 +1401,20 @@ class VideoQueueReviewer:
 
         self.at_end = False
         self.player.set_time(target_ms)
-        self.cached_time_ms = target_ms
-        self.sample_clock = time.perf_counter()
-        self.timeline.set_position(target_ms)
+        self._set_playhead_position(
+            target_ms,
+            ignore_stale_polls=True,
+        )
 
     def _timeline_seek(self, target_ms: int, final: bool) -> None:
         if self.busy or not self.queue:
             return
 
         target_ms = max(0, int(target_ms))
-        self.cached_time_ms = target_ms
-        self.sample_clock = time.perf_counter()
+        self._set_playhead_position(
+            target_ms,
+            ignore_stale_polls=True,
+        )
 
         # At Ended, wait for release so dragging does not repeatedly restart VLC.
         state = self.player.get_state()
@@ -1185,8 +1449,10 @@ class VideoQueueReviewer:
         target_ms = self.pending_drag_seek_ms
         self.pending_drag_seek_ms = None
         self.player.set_time(target_ms)
-        self.cached_time_ms = target_ms
-        self.sample_clock = time.perf_counter()
+        self._set_playhead_position(
+            target_ms,
+            ignore_stale_polls=True,
+        )
 
     def _restart_at(
         self,
@@ -1325,9 +1591,11 @@ class VideoQueueReviewer:
             self.player.set_pause(1)
 
         actual_ms = max(0, int(self.player.get_time()))
-        self.cached_time_ms = actual_ms if actual_ms >= 0 else target_ms
+        self._set_playhead_position(
+            actual_ms if actual_ms >= 0 else target_ms,
+            ignore_stale_polls=True,
+        )
         self.cached_playing = not pause_after
-        self.sample_clock = time.perf_counter()
         self.at_end = mark_as_end
         self.restarting = False
         self._set_status(ready_message)
@@ -1343,8 +1611,8 @@ class VideoQueueReviewer:
         if self.busy:
             self._set_status("Please wait for the current file operation.")
             return False
-        if self.capture_busy:
-            self._set_status("Please wait for the current frame to finish saving.")
+        if self.capture_busy or self.export_process is not None:
+            self._set_status("Please wait for the current export to finish.")
             return False
         if not self.queue:
             self._set_status("The queue is empty.")
@@ -1396,411 +1664,445 @@ class VideoQueueReviewer:
             return current
         return self._estimated_time_ms()
 
+    def _require_ffmpeg(self) -> bool:
+        if self.ffmpeg_path is not None and self.ffmpeg_path.is_file():
+            return True
+
+        messagebox.showerror(
+            "FFmpeg is required",
+            "Exact frame saving and clip export require ffmpeg.exe.\n\n"
+            "Install FFmpeg and add its bin folder to PATH, set FFMPEG_DIR, "
+            "or set FFMPEG_DIRECTORY_OVERRIDE near the top of this script.",
+        )
+        self._set_status("FFmpeg was not found.")
+        return False
+
+    def _capture_is_last_frame(self) -> bool:
+        state = self.player.get_state()
+        return self.at_end or state == vlc.State.Ended
+
     def _save_current_frame(
         self,
         requested_ms: int,
         after_saved=None,
     ) -> None:
         """
-        Save the frame with a fast normal attempt and one robust fallback.
-
-        The normal attempt does not pause playback. If VLC accepts the request
-        but fails to produce a file (most commonly because playback reaches the
-        end while the video-output thread is processing it), the fallback
-        restarts at the recorded timestamp, pauses on that exact frame, retries,
-        and then restores the previous playback state when appropriate.
+        Extract a frame with FFmpeg without seeking, restarting, or refreshing
+        the VLC viewport.
         """
-        if self.closed or not self.queue:
+        if self.closed or not self.queue or not self._require_ffmpeg():
+            return
+
+        if self.export_process is not None:
+            self._set_status("Please wait for the current export to finish.")
             return
 
         self.capture_busy = True
         self.capture_id += 1
-        capture_id = self.capture_id
 
         video_path = self.queue[0]
-        state = self.player.get_state()
-        ended_now = self.at_end or state == vlc.State.Ended
-        live_time = int(self.player.get_time())
-        if live_time < 0:
-            live_time = requested_ms
+        last_frame = self._capture_is_last_frame()
+        timestamp_ms = max(0, int(requested_ms))
+
+        timestamp_label_ms = (
+            max(
+                0,
+                self.cached_length_ms,
+                int(self.player.get_length()),
+            )
+            if last_frame
+            else timestamp_ms
+        )
 
         final_path = unique_path(
             video_path.with_name(
                 f"{video_path.stem}_"
-                f"{format_playback_timestamp(requested_ms)}"
+                f"{format_playback_timestamp(timestamp_label_ms)}"
                 f"{SNAPSHOT_EXTENSION}"
             )
         )
-
-        context = {
-            "id": capture_id,
-            "video_path": video_path,
-            "requested_ms": max(0, int(requested_ms)),
-            "final_path": final_path,
-            "after_saved": after_saved,
-            "fallback_used": False,
-            "stabilized": False,
-            "leave_at_end": ended_now,
-            "resume_was_playing": bool(self.player.is_playing()),
-            "resume_ms": max(0, live_time),
-            "temp_path": None,
-            "started_at": 0.0,
-            "timeout_ms": self.SNAPSHOT_PRIMARY_TIMEOUT_MS,
-            "last_size": -1,
-            "stable_polls": 0,
-        }
-
-        if ended_now:
-            # Ended has no active video-output frame. Restore the final
-            # decodable frame first and use the stabilized path immediately.
-            context["fallback_used"] = True
-            context["stabilized"] = True
-            context["requested_ms"] = self._last_frame_position()
-            context["resume_ms"] = context["requested_ms"]
-            self._set_status("Restoring the last frame before saving…")
-            self._restart_at(
-                context["requested_ms"],
-                pause_after=True,
-                mark_as_end=True,
-                ready_message="Last frame ready; saving…",
-                on_ready=lambda: self._issue_snapshot(context, stabilized=True),
-                on_error=lambda message: self._capture_context_failed(
-                    context,
-                    message,
-                ),
-            )
-            return
-
-        # Fast path: request the currently displayed frame without pausing.
-        self._issue_snapshot(context, stabilized=False)
-
-    def _capture_context_is_current(self, context: dict) -> bool:
-        return (
-            not self.closed
-            and context.get("id") == self.capture_id
-            and bool(self.queue)
-            and self.queue[0] == context.get("video_path")
+        temporary_path = Path(tempfile.gettempdir()) / (
+            f"vqr_frame_{os.getpid()}_{uuid.uuid4().hex}.png"
         )
 
-    @staticmethod
-    def _cleanup_snapshot_temp(context: dict) -> None:
-        temp_path = context.get("temp_path")
-        if not isinstance(temp_path, Path):
+        command = self._build_frame_command(
+            video_path,
+            temporary_path,
+            timestamp_ms,
+            last_frame=last_frame,
+        )
+
+        context = {
+            "kind": "frame",
+            "video_path": video_path,
+            "temporary_path": temporary_path,
+            "final_path": final_path,
+            "after_saved": after_saved,
+        }
+
+        label = "last frame" if last_frame else format_entry_timestamp(timestamp_ms)
+        self._start_ffmpeg_export(
+            command,
+            context,
+            status=f"Saving frame at {label}…",
+        )
+
+    def _build_frame_command(
+        self,
+        video_path: Path,
+        output_path: Path,
+        timestamp_ms: int,
+        *,
+        last_frame: bool,
+    ) -> list[str]:
+        base = [
+            os.fspath(self.ffmpeg_path),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+        ]
+
+        if last_frame:
+            # Reverse only the final two seconds and output the first reversed
+            # frame. This yields the actual final decoded frame.
+            return base + [
+                "-sseof",
+                "-2",
+                "-i",
+                os.fspath(video_path),
+                "-map",
+                "0:v:0",
+                "-an",
+                "-vf",
+                "reverse",
+                "-frames:v",
+                "1",
+                os.fspath(output_path),
+            ]
+
+        preroll_ms = min(max(0, int(timestamp_ms)), 2_000)
+        input_seek_ms = max(0, int(timestamp_ms) - preroll_ms)
+
+        return base + [
+            "-ss",
+            ffmpeg_seconds(input_seek_ms),
+            "-i",
+            os.fspath(video_path),
+            "-ss",
+            ffmpeg_seconds(preroll_ms),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-frames:v",
+            "1",
+            os.fspath(output_path),
+        ]
+
+    def _remember_clip_field(self, field: str) -> None:
+        self.last_clip_field = field
+
+    def set_current_time_in_focused_clip_field(self) -> None:
+        if not self.queue:
+            self._set_status("The queue is empty.")
+            return
+
+        focus_widget = self.root.focus_get()
+        if focus_widget == self.clip_start_entry:
+            field = "start"
+        elif focus_widget == self.clip_end_entry:
+            field = "end"
+        else:
+            field = self.last_clip_field
+            if not self.clip_start_var.get().strip():
+                field = "start"
+            elif not self.clip_end_var.get().strip():
+                field = "end"
+
+        # Clip boundaries follow the visible playhead. At the completed state
+        # this is the full media duration; frame extraction separately uses the
+        # actual final decodable frame.
+        state = self.player.get_state()
+        if self.at_end or state == vlc.State.Ended:
+            timestamp_ms = max(
+                self.cached_length_ms,
+                int(self.player.get_length()),
+                0,
+            )
+        else:
+            current_ms = int(self.player.get_time())
+            timestamp_ms = (
+                current_ms
+                if current_ms >= 0
+                else self._estimated_time_ms()
+            )
+
+        value = format_entry_timestamp(timestamp_ms)
+
+        if field == "end":
+            self.clip_end_var.set(value)
+            self.last_clip_field = "end"
+            self.clip_end_entry.focus_set()
+            self.clip_end_entry.selection_range(0, tk.END)
+        else:
+            self.clip_start_var.set(value)
+            self.last_clip_field = "start"
+            self.clip_start_entry.focus_set()
+            self.clip_start_entry.selection_range(0, tk.END)
+
+        self._set_status(f"Set clip {field} to {value}.")
+
+    def save_video_clip(self) -> None:
+        if not self._action_allowed() or not self._require_ffmpeg():
             return
 
         try:
-            temp_path.unlink(missing_ok=True)
+            start_ms = parse_entry_timestamp(self.clip_start_var.get())
+            end_ms = parse_entry_timestamp(self.clip_end_var.get())
+        except ValueError as exc:
+            messagebox.showerror("Invalid clip timestamp", str(exc))
+            return
+
+        if end_ms <= start_ms:
+            messagebox.showerror(
+                "Invalid clip range",
+                "The ending timestamp must be later than the starting timestamp.",
+            )
+            return
+
+        length_ms = max(
+            self.cached_length_ms,
+            int(self.player.get_length()),
+            0,
+        )
+        if length_ms > 0 and start_ms >= length_ms:
+            messagebox.showerror(
+                "Invalid clip range",
+                "The starting timestamp is beyond the end of the video.",
+            )
+            return
+
+        if length_ms > 0:
+            end_ms = min(end_ms, length_ms)
+            self.clip_end_var.set(format_entry_timestamp(end_ms))
+
+        video_path = self.queue[0]
+        final_path = unique_path(
+            video_path.with_name(
+                f"{video_path.stem}_clip_"
+                f"{format_playback_timestamp(start_ms)}_to_"
+                f"{format_playback_timestamp(end_ms)}.mp4"
+            )
+        )
+        temporary_path = final_path.with_name(
+            f".{final_path.stem}_{uuid.uuid4().hex}.temporary.mp4"
+        )
+
+        command = self._build_clip_command(
+            video_path,
+            temporary_path,
+            start_ms,
+            end_ms,
+        )
+
+        self.capture_busy = True
+        self.capture_id += 1
+        context = {
+            "kind": "clip",
+            "video_path": video_path,
+            "temporary_path": temporary_path,
+            "final_path": final_path,
+            "after_saved": None,
+        }
+
+        self._start_ffmpeg_export(
+            command,
+            context,
+            status=(
+                f"Saving clip {format_entry_timestamp(start_ms)} → "
+                f"{format_entry_timestamp(end_ms)}…"
+            ),
+        )
+
+    def _build_clip_command(
+        self,
+        video_path: Path,
+        output_path: Path,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[str]:
+        duration_ms = end_ms - start_ms
+        preroll_ms = min(start_ms, 2_000)
+        input_seek_ms = start_ms - preroll_ms
+
+        return [
+            os.fspath(self.ffmpeg_path),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-ss",
+            ffmpeg_seconds(input_seek_ms),
+            "-i",
+            os.fspath(video_path),
+            "-ss",
+            ffmpeg_seconds(preroll_ms),
+            "-t",
+            ffmpeg_seconds(duration_ms),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-threads",
+            "2",
+            "-movflags",
+            "+faststart",
+            "-avoid_negative_ts",
+            "make_zero",
+            os.fspath(output_path),
+        ]
+
+    def _start_ffmpeg_export(
+        self,
+        command: list[str],
+        context: dict,
+        *,
+        status: str,
+    ) -> None:
+        if self.export_process is not None:
+            self.capture_busy = False
+            self._set_status("Please wait for the current export to finish.")
+            return
+
+        temporary_path: Path = context["temporary_path"]
+        try:
+            temporary_path.unlink(missing_ok=True)
         except OSError:
             pass
 
-        context["temp_path"] = None
-
-    def _new_snapshot_temp_path(self) -> Path:
-        """
-        Use a short, unique ASCII filename in the system temporary directory.
-
-        This avoids libVLC path handling issues with long, Unicode, or unusual
-        destination filenames. The completed file is moved to its final name
-        only after it is verified.
-        """
-        return Path(tempfile.gettempdir()) / (
-            f"vqr_{os.getpid()}_{uuid.uuid4().hex}.png"
-        )
-
-    def _issue_snapshot(self, context: dict, *, stabilized: bool) -> None:
-        if not self._capture_context_is_current(context):
-            self._cleanup_snapshot_temp(context)
-            self.capture_busy = False
-            return
-
-        self._cleanup_snapshot_temp(context)
-        temp_path = self._new_snapshot_temp_path()
-        context["temp_path"] = temp_path
-        context["stabilized"] = stabilized
-        context["started_at"] = time.perf_counter()
-        context["timeout_ms"] = (
-            self.SNAPSHOT_FALLBACK_TIMEOUT_MS
-            if stabilized
-            else self.SNAPSHOT_PRIMARY_TIMEOUT_MS
-        )
-        context["last_size"] = -1
-        context["stable_polls"] = 0
-
-        try:
-            has_vout = int(self.player.has_vout())
-        except Exception:
-            has_vout = 1
-
-        if has_vout <= 0:
-            if stabilized:
-                self._capture_context_failed(
-                    context,
-                    "VLC has no active video output from which to capture a frame.",
-                )
-            else:
-                self._start_stabilized_snapshot(context)
-            return
-
-        self._set_status(
-            "Saving frame…"
-            if not stabilized
-            else "Retrying exact-frame capture…"
-        )
-
-        try:
-            result = self.player.video_take_snapshot(
-                0,
-                os.fspath(temp_path),
-                0,
+        creation_flags = 0
+        if sys.platform == "win32":
+            creation_flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            creation_flags |= getattr(
+                subprocess,
+                "BELOW_NORMAL_PRIORITY_CLASS",
                 0,
             )
-        except Exception as exc:
-            if stabilized:
-                self._capture_context_failed(
-                    context,
-                    f"Could not save the current frame.\n\n{exc}",
-                )
-            else:
-                self._start_stabilized_snapshot(context)
+
+        try:
+            self.export_process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=creation_flags,
+            )
+        except OSError as exc:
+            self.export_process = None
+            self.capture_busy = False
+            messagebox.showerror(
+                "Export could not start",
+                f"Could not start FFmpeg.\n\n{exc}",
+            )
             return
 
-        if result != 0:
-            if stabilized:
-                self._capture_context_failed(
-                    context,
-                    "VLC could not capture a video frame. Its decoder may not "
-                    "expose snapshots for this file.",
-                )
-            else:
-                self._start_stabilized_snapshot(context)
+        self.export_context = context
+        self._set_status(status)
+        self.root.after(120, self._poll_ffmpeg_export)
+
+    def _poll_ffmpeg_export(self) -> None:
+        process = self.export_process
+        context = self.export_context
+
+        if process is None or context is None:
             return
 
-        # video_take_snapshot() queues work in VLC. Poll without blocking the
-        # Tkinter UI and require two equal non-zero sizes before moving the file.
-        self.root.after(
-            self.SNAPSHOT_POLL_MS,
-            lambda: self._verify_snapshot_temp(context),
-        )
-
-    def _verify_snapshot_temp(self, context: dict) -> None:
-        if not self._capture_context_is_current(context):
-            self._cleanup_snapshot_temp(context)
+        return_code = process.poll()
+        if return_code is None:
+            self.root.after(120, self._poll_ffmpeg_export)
             return
 
-        temp_path = context.get("temp_path")
-        size = 0
+        try:
+            stderr = process.stderr.read() if process.stderr is not None else ""
+        except OSError:
+            stderr = ""
 
-        if isinstance(temp_path, Path):
+        self.export_process = None
+        self.export_context = None
+
+        temporary_path: Path = context["temporary_path"]
+        final_path: Path = context["final_path"]
+
+        if return_code != 0:
+            self.capture_busy = False
             try:
-                if temp_path.is_file():
-                    size = temp_path.stat().st_size
+                temporary_path.unlink(missing_ok=True)
             except OSError:
-                size = 0
+                pass
 
-        if size > 0:
-            if size == context.get("last_size"):
-                context["stable_polls"] = int(
-                    context.get("stable_polls", 0)
-                ) + 1
-            else:
-                context["last_size"] = size
-                context["stable_polls"] = 0
-
-            if context["stable_polls"] >= 1:
-                self._move_verified_snapshot(context, attempts_remaining=30)
-                return
-
-        elapsed_ms = (
-            time.perf_counter() - float(context.get("started_at", 0.0))
-        ) * 1000.0
-
-        if elapsed_ms < int(context.get("timeout_ms", 0)):
-            self.root.after(
-                self.SNAPSHOT_POLL_MS,
-                lambda: self._verify_snapshot_temp(context),
-            )
-            return
-
-        self._cleanup_snapshot_temp(context)
-
-        if not context.get("fallback_used"):
-            self._start_stabilized_snapshot(context)
-            return
-
-        self._capture_context_failed(
-            context,
-            "VLC accepted the snapshot request but did not produce an image, "
-            "even after retrying on the exact paused frame.",
-        )
-
-    def _start_stabilized_snapshot(self, context: dict) -> None:
-        """
-        Retry by rebuilding the decoder at the exact requested timestamp.
-
-        This path is deliberately used only after the lightweight direct
-        snapshot fails, so ordinary successful captures remain instant and do
-        not disturb playback.
-        """
-        if not self._capture_context_is_current(context):
-            self._cleanup_snapshot_temp(context)
-            self.capture_busy = False
-            return
-
-        if context.get("fallback_used"):
-            self._capture_context_failed(
-                context,
-                "VLC could not write the snapshot file.",
-            )
-            return
-
-        context["fallback_used"] = True
-        context["stabilized"] = True
-
-        state = self.player.get_state()
-        leave_at_end = self.at_end or state == vlc.State.Ended
-        context["leave_at_end"] = leave_at_end
-        context["resume_was_playing"] = bool(self.player.is_playing())
-
-        current_ms = int(self.player.get_time())
-        if current_ms < 0:
-            current_ms = self._estimated_time_ms()
-        context["resume_ms"] = max(0, current_ms)
-
-        target_ms = int(context["requested_ms"])
-        if leave_at_end:
-            target_ms = self._last_frame_position()
-            context["requested_ms"] = target_ms
-
-        self._set_status(
-            "The direct snapshot was not written; retrying the exact frame…"
-        )
-
-        self._restart_at(
-            target_ms,
-            pause_after=True,
-            mark_as_end=leave_at_end,
-            ready_message="Exact frame ready; saving…",
-            on_ready=lambda: self._issue_snapshot(
-                context,
-                stabilized=True,
-            ),
-            on_error=lambda message: self._capture_context_failed(
-                context,
-                message,
-            ),
-        )
-
-    def _move_verified_snapshot(
-        self,
-        context: dict,
-        *,
-        attempts_remaining: int,
-    ) -> None:
-        if not self._capture_context_is_current(context):
-            self._cleanup_snapshot_temp(context)
-            return
-
-        temp_path = context.get("temp_path")
-        final_path = context.get("final_path")
-        if not isinstance(temp_path, Path) or not isinstance(final_path, Path):
-            self._capture_context_failed(
-                context,
-                "The snapshot destination path was invalid.",
-            )
+            detail = stderr.strip()[-3000:] or "FFmpeg returned an unknown error."
+            self._set_status("Export failed; the video was not changed.")
+            messagebox.showerror("Export failed", detail)
             return
 
         try:
-            # shutil.move also handles the unlikely case where the system temp
-            # directory and the video folder are on different drives.
-            moved_path = Path(shutil.move(os.fspath(temp_path), os.fspath(final_path)))
-            context["temp_path"] = None
-        except (PermissionError, OSError) as exc:
-            if attempts_remaining > 0:
-                self.root.after(
-                    self.SNAPSHOT_POLL_MS,
-                    lambda: self._move_verified_snapshot(
-                        context,
-                        attempts_remaining=attempts_remaining - 1,
-                    ),
-                )
-                return
-
-            self._capture_context_failed(
-                context,
-                f"The frame was created, but Windows could not move it to:\n"
-                f"{final_path}\n\n{exc}",
+            valid = (
+                temporary_path.is_file()
+                and temporary_path.stat().st_size > 0
             )
-            return
-
-        try:
-            valid = moved_path.is_file() and moved_path.stat().st_size > 0
         except OSError:
             valid = False
 
         if not valid:
-            self._capture_context_failed(
-                context,
-                "The snapshot file disappeared while it was being finalized.",
+            self.capture_busy = False
+            messagebox.showerror(
+                "Export failed",
+                "FFmpeg finished without creating a valid output file.",
+            )
+            return
+
+        try:
+            shutil.move(
+                os.fspath(temporary_path),
+                os.fspath(final_path),
+            )
+        except OSError as exc:
+            self.capture_busy = False
+            messagebox.showerror(
+                "Export failed",
+                f"The export was created, but could not be moved to:\n"
+                f"{final_path}\n\n{exc}",
             )
             return
 
         self.capture_busy = False
-        self._show_saved_notification(moved_path.name)
+        kind = str(context.get("kind", "export"))
+        notification_kind = "Frame" if kind == "frame" else "Clip"
+        self._show_saved_notification(
+            final_path.name,
+            kind=notification_kind,
+        )
 
         after_saved = context.get("after_saved")
         if after_saved is not None:
-            # Option 2 immediately stops and renames the video, so restoring
-            # playback first would only create unnecessary work.
-            self.root.after_idle(lambda: after_saved(moved_path))
-            return
-
-        if context.get("stabilized"):
-            self._restore_after_stabilized_snapshot(context)
-
-    def _restore_after_stabilized_snapshot(self, context: dict) -> None:
-        if not self._capture_context_is_current(context):
-            return
-
-        if context.get("leave_at_end"):
-            self.player.set_pause(1)
-            self.cached_playing = False
-            self.at_end = True
-            self.cached_time_ms = int(context["requested_ms"])
-            self.sample_clock = time.perf_counter()
-            return
-
-        resume_ms = max(0, int(context.get("resume_ms", 0)))
-        if self.cached_length_ms > 0:
-            resume_ms = min(resume_ms, max(0, self.cached_length_ms - 1))
-
-        try:
-            self.player.set_time(resume_ms)
-            if context.get("resume_was_playing"):
-                self.player.set_pause(0)
-                self.cached_playing = True
-            else:
-                self.player.set_pause(1)
-                self.cached_playing = False
-        except Exception:
-            return
-
-        self.at_end = False
-        self.cached_time_ms = resume_ms
-        self.sample_clock = time.perf_counter()
-
-    def _capture_context_failed(self, context: dict, message: str) -> None:
-        if context.get("id") != self.capture_id:
-            self._cleanup_snapshot_temp(context)
-            return
-
-        self._cleanup_snapshot_temp(context)
-        self.capture_busy = False
-
-        if context.get("stabilized") and context.get("after_saved") is None:
-            self._restore_after_stabilized_snapshot(context)
-
-        self._set_status("Snapshot failed; the video was not changed.")
-        messagebox.showerror("Snapshot failed", message)
+            self.root.after_idle(lambda: after_saved(final_path))
 
     # ------------------------------------------------------------------
     # Rename and advance
@@ -1885,11 +2187,17 @@ class VideoQueueReviewer:
         if self.closed:
             return
 
-        if hasattr(self, "player") and self.queue and not self.busy and not self.restarting:
+        if (
+            hasattr(self, "player")
+            and self.queue
+            and not self.busy
+            and not self.restarting
+        ):
             try:
                 state = self.player.get_state()
                 current = int(self.player.get_time())
                 length = int(self.player.get_length())
+                now = time.perf_counter()
 
                 if length > 0:
                     self.cached_length_ms = length
@@ -1897,29 +2205,45 @@ class VideoQueueReviewer:
 
                 if state == vlc.State.Playing:
                     if current >= 0:
-                        self.cached_time_ms = current
+                        if (
+                            now >= self.ignore_stale_poll_until
+                            or abs(current - self.timeline_target_ms) < 700
+                        ):
+                            self.cached_time_ms = current
+                            self.timeline_target_ms = max(
+                                self.timeline_target_ms,
+                                float(current),
+                            )
+
                     self.cached_playing = True
-                    self.sample_clock = time.perf_counter()
+                    self.sample_clock = now
                     self.at_end = False
+
                 elif state == vlc.State.Ended:
                     self.cached_playing = False
                     self.at_end = True
                     if self.cached_length_ms > 0:
                         self.cached_time_ms = self.cached_length_ms
+                        self.timeline_target_ms = float(
+                            self.cached_length_ms
+                        )
+
                 else:
                     if current >= 0:
                         self.cached_time_ms = current
-                    self.cached_playing = False
-                    self.sample_clock = time.perf_counter()
+                        self.timeline_target_ms = float(current)
+                        if not self.timeline.dragging:
+                            self.display_time_ms = float(current)
 
-                # Once a valid FPS is known, stop asking VLC for it.
+                    self.cached_playing = False
+                    self.sample_clock = now
+
                 if self.last_known_fps <= 0:
                     fps = float(self.player.get_fps())
                     if fps > 0:
                         self.last_known_fps = fps
 
             except Exception:
-                # A transient VLC state during file changes is harmless.
                 pass
 
         self.root.after(self.PLAYER_POLL_MS, self._poll_player)
@@ -1928,8 +2252,39 @@ class VideoQueueReviewer:
         if self.closed:
             return
 
+        now = time.perf_counter()
+        elapsed_ms = max(
+            0.0,
+            min(250.0, (now - self.last_animation_clock) * 1000.0),
+        )
+        self.last_animation_clock = now
+
+        if not self.timeline.dragging:
+            if self.cached_playing and not self.at_end:
+                lead_limit = self.timeline_target_ms + self.PLAYER_POLL_MS
+                if self.cached_length_ms > 0:
+                    lead_limit = min(
+                        lead_limit,
+                        float(self.cached_length_ms),
+                    )
+
+                self.display_time_ms = min(
+                    lead_limit,
+                    self.display_time_ms + elapsed_ms,
+                )
+            else:
+                self.display_time_ms = self.timeline_target_ms
+
+            if self.cached_length_ms > 0:
+                self.display_time_ms = min(
+                    self.display_time_ms,
+                    float(self.cached_length_ms),
+                )
+
+            self.display_time_ms = max(0.0, self.display_time_ms)
+            self.timeline.set_position(int(round(self.display_time_ms)))
+
         position_ms = self._estimated_time_ms()
-        self.timeline.set_position(position_ms)
 
         current_second = position_ms // 1000
         if current_second != self.last_displayed_second:
@@ -1960,6 +2315,8 @@ class VideoQueueReviewer:
         self.cached_playing = False
         if self.cached_length_ms > 0:
             self.cached_time_ms = self.cached_length_ms
+            self.timeline_target_ms = float(self.cached_length_ms)
+            self.display_time_ms = float(self.cached_length_ms)
             self.timeline.set_position(self.cached_length_ms)
         self._set_status(
             "Video ended. Click the timeline to replay from a point, press "
@@ -1981,6 +2338,14 @@ class VideoQueueReviewer:
     def close(self) -> None:
         self.closed = True
         self.capture_id += 1
+
+        if self.export_process is not None:
+            try:
+                self.export_process.terminate()
+            except OSError:
+                pass
+            self.export_process = None
+            self.export_context = None
 
         if self.drag_seek_after_id is not None:
             try:
