@@ -10,6 +10,22 @@ import uuid
 from pathlib import Path
 
 
+# The helper communicates with the UI through stdout/stderr pipes. On some
+# Windows installations Python inherits a legacy code page such as cp1252,
+# which cannot print many Vietnamese or other Unicode filename characters.
+# Force UTF-8, while keeping ASCII-safe JSON as an additional safeguard.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(
+        encoding="utf-8",
+        errors="backslashreplace",
+    )
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(
+        encoding="utf-8",
+        errors="backslashreplace",
+    )
+
+
 def find_program(name: str, override: str | None = None) -> Path:
     """Find ffmpeg/ffprobe from an override, environment, PATH, or common folders."""
     executable_name = name + (".exe" if os.name == "nt" else "")
@@ -425,7 +441,7 @@ def main() -> int:
                     ),
                     "last_frame": use_last,
                 },
-                ensure_ascii=False,
+                ensure_ascii=True,
             )
         )
         return 0
@@ -437,7 +453,7 @@ def main() -> int:
                     "ok": False,
                     "error": str(exc),
                 },
-                ensure_ascii=False,
+                ensure_ascii=True,
             ),
             file=sys.stderr,
         )

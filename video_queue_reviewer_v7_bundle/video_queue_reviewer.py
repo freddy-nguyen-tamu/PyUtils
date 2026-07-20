@@ -2177,6 +2177,10 @@ class VideoQueueReviewer:
                 0,
             )
 
+        child_environment = os.environ.copy()
+        child_environment["PYTHONIOENCODING"] = "utf-8"
+        child_environment["PYTHONUTF8"] = "1"
+
         try:
             self.export_process = subprocess.Popen(
                 command,
@@ -2187,6 +2191,7 @@ class VideoQueueReviewer:
                 encoding="utf-8",
                 errors="replace",
                 creationflags=creation_flags,
+                env=child_environment,
             )
         except OSError as exc:
             self.export_process = None
