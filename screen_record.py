@@ -2,104 +2,104 @@ from __future__ import annotations
 
 import ctypes
 import datetime as dt
-import multiprocessing as mp
+import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import threading
 import time
-import wave
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Iterable
 
-import mss
-import pyaudiowpatch as pyaudio
+try:
+    import pyaudiowpatch as pyaudio
+except ImportError:
+    pyaudio = None  # type: ignore[assignment]
 
 
 # ============================================================
 # SETTINGS
 # ============================================================
 
-FRAME_RATE = 30
+# None = use the primary display's current refresh rate.
+# Set an integer such as 30 or 60 to cap the capture rate.
+FRAME_RATE: int | None = None
 
-# H.264 quality:
-# 18 = very high quality and larger
-# 23 = good default
-# 28 = smaller
-CRF = 23
-
-# ultrafast uses less CPU and helps avoid dropped frames.
-# Change to "veryfast" if the computer handles it comfortably.
-VIDEO_PRESET = "ultrafast"
-
-# Audio chunks read per operation.
-# A somewhat larger block gives WASAPI/PortAudio more scheduling margin
-# and prevents tiny periodic gaps on a busy machine.
-AUDIO_CHUNK_SIZE = 4096
-
+# WASAPI loopback is opened on the playback device that is the Windows
+# default when recording starts. No Stereo Mix device is required.
+AUDIO_CHUNK_SIZE = 1024
 AUDIO_BITRATE = "192k"
 
-# Move captured audio earlier to compensate for Bluetooth/WASAPI latency.
-# Increase if audio is still late; decrease if audio becomes early.
-AUDIO_ADVANCE_MS = 250
+# Large FFmpeg input queues protect short encoder or disk stalls.
+INPUT_QUEUE_PACKETS = 8192
+REALTIME_BUFFER_SIZE = "1024M"
 
-# True records all monitors as one virtual desktop.
-# False records only the primary monitor.
-CAPTURE_ALL_MONITORS = True
+# H.264 quality. Lower is better quality and larger output.
+VIDEO_QUALITY = 20
 
+# First record into Matroska, then remux to MP4 without re-encoding.
 OUTPUT_DIRECTORY = Path("screen_recordings")
 
+# When either PortAudio or FFmpeg reports lost data, retain the recording but
+# name it *_CAPTURE_LOSS.mp4 instead of claiming that it is exact.
+STRICT_CAPTURE_REPORTING = True
+
 
 # ============================================================
-# GENERAL HELPERS
+# SMALL DATA TYPES
 # ============================================================
 
-def find_executable(name: str) -> str:
-    executable = shutil.which(name)
+@dataclass(slots=True)
+class AudioPacket:
+    """PCM captured at a specific frame position on the video timeline."""
 
-    if executable is None:
+    start_frame: int
+    data: bytes
+
+
+@dataclass(slots=True)
+class AudioStats:
+    callback_status_count: int = 0
+    queued_packets: int = 0
+    written_frames: int = 0
+    inserted_silence_frames: int = 0
+    trimmed_overlap_frames: int = 0
+    writer_error: str | None = None
+
+
+# ============================================================
+# WINDOWS / GENERAL HELPERS
+# ============================================================
+
+
+def require_windows() -> None:
+    if sys.platform != "win32":
+        raise RuntimeError("This recorder is designed for Windows.")
+
+
+def require_pyaudiowpatch() -> None:
+    if pyaudio is None:
         raise RuntimeError(
-            f"{name} was not found in PATH. "
-            f"Install it and restart Command Prompt."
+            "PyAudioWPatch is not installed. Run:\n"
+            "  py -m pip install -U PyAudioWPatch"
         )
 
-    return executable
+
+def find_ffmpeg() -> str:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError(
+            "ffmpeg was not found in PATH. Install FFmpeg and restart "
+            "Command Prompt or PowerShell."
+        )
+    return ffmpeg
 
 
-def make_output_paths() -> tuple[Path, Path, Path]:
-    OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
-
-    timestamp = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-    final_path = (
-        OUTPUT_DIRECTORY / f"screen_recording_{timestamp}.mp4"
-    ).resolve()
-
-    video_path = (
-        OUTPUT_DIRECTORY / f".video_{timestamp}.mp4"
-    ).resolve()
-
-    audio_path = (
-        OUTPUT_DIRECTORY / f".audio_{timestamp}.wav"
-    ).resolve()
-
-    return final_path, video_path, audio_path
-
-
-def remove_file(path: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-    except OSError as error:
-        print(f"Warning: could not remove {path}: {error}")
-
-
-# ============================================================
-# AUDIO PROCESS
-# ============================================================
-
-def raise_audio_process_priority() -> None:
-    """Give the dedicated audio process extra CPU scheduling priority."""
+def raise_python_priority() -> None:
+    """Protect the tiny WASAPI forwarding workload from ordinary CPU stalls."""
     if sys.platform != "win32":
         return
 
@@ -112,203 +112,884 @@ def raise_audio_process_priority() -> None:
         set_priority_class.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         set_priority_class.restype = ctypes.c_int
 
-        # ABOVE_NORMAL_PRIORITY_CLASS.  This is enough to protect audio
-        # without making the recorder aggressively starve the desktop.
+        # ABOVE_NORMAL_PRIORITY_CLASS. High enough to protect capture without
+        # allowing the recorder to aggressively starve the visible desktop.
         set_priority_class(get_current_process(), 0x00008000)
     except Exception:
-        # Priority elevation is only an optimization.  Recording must still
-        # work on systems where it is unavailable.
         pass
 
 
+def enable_mmcss_for_current_thread() -> object | None:
+    """Register the PortAudio callback thread with Windows MMCSS."""
+    if sys.platform != "win32":
+        return None
+
+    try:
+        avrt = ctypes.WinDLL("avrt", use_last_error=True)
+        task_index = ctypes.c_uint32(0)
+        function = avrt.AvSetMmThreadCharacteristicsW
+        function.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint32)]
+        function.restype = ctypes.c_void_p
+
+        handle = function("Pro Audio", ctypes.byref(task_index))
+        if not handle:
+            handle = function("Audio", ctypes.byref(task_index))
+        return handle or None
+    except Exception:
+        return None
+
+
+def get_primary_refresh_rate() -> int:
+    """Read the current primary-display refresh rate from Windows."""
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+
+        get_dc = user32.GetDC
+        get_dc.argtypes = [ctypes.c_void_p]
+        get_dc.restype = ctypes.c_void_p
+
+        release_dc = user32.ReleaseDC
+        release_dc.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        release_dc.restype = ctypes.c_int
+
+        get_device_caps = gdi32.GetDeviceCaps
+        get_device_caps.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        get_device_caps.restype = ctypes.c_int
+
+        VREFRESH = 116
+        dc = get_dc(None)
+        if not dc:
+            return 60
+
+        try:
+            refresh = int(get_device_caps(dc, VREFRESH))
+        finally:
+            release_dc(None, dc)
+
+        if 24 <= refresh <= 360:
+            return refresh
+    except Exception:
+        pass
+
+    return 60
+
+
+def run_text(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+
+def encoder_probe_command(ffmpeg: str, encoder: str) -> list[str]:
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=64x64:r=1",
+        "-frames:v",
+        "1",
+        "-an",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:v",
+        encoder,
+        "-f",
+        "null",
+        os.devnull,
+    ]
+
+
+def choose_video_encoder(ffmpeg: str) -> str:
+    """Prefer a working hardware encoder to reduce desktop interference."""
+    for encoder in ("h264_nvenc", "h264_qsv", "h264_amf"):
+        if run_text(encoder_probe_command(ffmpeg, encoder)).returncode == 0:
+            return encoder
+    return "libx264"
+
+
+def encoder_arguments(encoder: str, fps: int) -> list[str]:
+    common = [
+        "-c:v",
+        encoder,
+        "-pix_fmt",
+        "yuv420p",
+        "-g",
+        str(max(1, fps * 2)),
+        "-bf",
+        "0",
+    ]
+
+    if encoder == "h264_nvenc":
+        return common + [
+            "-preset",
+            "p1",
+            "-tune",
+            "ull",
+            "-rc",
+            "constqp",
+            "-qp",
+            str(VIDEO_QUALITY),
+        ]
+
+    if encoder == "h264_qsv":
+        return common + [
+            "-preset",
+            "veryfast",
+            "-global_quality",
+            str(VIDEO_QUALITY),
+        ]
+
+    if encoder == "h264_amf":
+        return common + [
+            "-quality",
+            "speed",
+            "-rc",
+            "cqp",
+            "-qp_i",
+            str(VIDEO_QUALITY),
+            "-qp_p",
+            str(VIDEO_QUALITY),
+        ]
+
+    return common + [
+        "-preset",
+        "ultrafast",
+        "-tune",
+        "zerolatency",
+        "-crf",
+        str(VIDEO_QUALITY),
+    ]
+
+
+def make_output_paths() -> tuple[Path, Path, Path, Path]:
+    OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    timestamp = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    normal_mp4 = (
+        OUTPUT_DIRECTORY / f"screen_recording_{timestamp}.mp4"
+    ).resolve()
+    loss_mp4 = (
+        OUTPUT_DIRECTORY / f"screen_recording_{timestamp}_CAPTURE_LOSS.mp4"
+    ).resolve()
+    temporary_mkv = (
+        OUTPUT_DIRECTORY / f".screen_recording_{timestamp}.mkv"
+    ).resolve()
+    log_path = (
+        OUTPUT_DIRECTORY / f"screen_recording_{timestamp}.log"
+    ).resolve()
+
+    return normal_mp4, loss_mp4, temporary_mkv, log_path
+
+
+# ============================================================
+# WASAPI LOOPBACK
+# ============================================================
+
+
 def find_default_wasapi_loopback(
-    audio_manager: pyaudio.PyAudio,
+    audio_manager: Any,
 ) -> dict[str, Any]:
-    """
-    Find the WASAPI loopback equivalent of the current default
-    Windows playback device.
-    """
+    """Find the loopback counterpart of Windows' default output endpoint."""
     try:
         wasapi_info = audio_manager.get_host_api_info_by_type(
             pyaudio.paWASAPI
         )
     except OSError as error:
-        raise RuntimeError(
-            "Windows WASAPI is unavailable."
-        ) from error
+        raise RuntimeError("Windows WASAPI is unavailable.") from error
 
     output_index = int(wasapi_info["defaultOutputDevice"])
-
     if output_index < 0:
-        raise RuntimeError(
-            "Windows has no default playback device."
-        )
+        raise RuntimeError("Windows has no default playback device.")
 
-    default_output = audio_manager.get_device_info_by_index(
-        output_index
-    )
+    default_output = audio_manager.get_device_info_by_index(output_index)
 
     if bool(default_output.get("isLoopbackDevice", False)):
-        return default_output
+        return dict(default_output)
 
-    # Preferred library helper.
     try:
         loopback = audio_manager.get_wasapi_loopback_analogue_by_dict(
             default_output
         )
-
         if loopback is not None:
-            return loopback
+            return dict(loopback)
     except (AttributeError, OSError, ValueError):
         pass
 
-    # Fallback: compare names manually.
-    output_name = str(default_output["name"]).lower()
+    output_name = str(default_output.get("name", "")).lower()
+    best_match: dict[str, Any] | None = None
 
-    for device in audio_manager.get_loopback_device_info_generator():
-        loopback_name = str(device["name"]).lower()
+    for candidate in audio_manager.get_loopback_device_info_generator():
+        candidate_dict = dict(candidate)
+        candidate_name = str(candidate_dict.get("name", "")).lower()
 
-        if output_name in loopback_name:
-            return device
+        if output_name and output_name in candidate_name:
+            return candidate_dict
+
+        if best_match is None:
+            best_match = candidate_dict
+
+    if best_match is not None:
+        return best_match
 
     raise RuntimeError(
-        "Could not find the WASAPI loopback device corresponding to "
-        f"the default playback device: {default_output['name']}"
+        "PyAudioWPatch found no WASAPI loopback endpoint for the current "
+        "default playback device."
     )
 
 
-def audio_process_main(
-    audio_path_string: str,
-    stop_event: Any,
-    ready_event: Any,
-    start_event: Any,
-    result_queue: Any,
+def open_loopback_stream(
+    audio_manager: Any,
+    loopback: dict[str, Any],
+    callback: Any,
+) -> tuple[Any, int, int, int]:
+    device_index = int(loopback["index"])
+    sample_rate = int(round(float(loopback["defaultSampleRate"])))
+    max_channels = max(1, int(loopback["maxInputChannels"]))
+
+    # Stereo is preferred. Fall back to the endpoint's full channel count if
+    # its driver refuses a two-channel shared-mode conversion.
+    channel_candidates: list[int] = []
+    if max_channels >= 2:
+        channel_candidates.append(2)
+    channel_candidates.append(max_channels)
+    channel_candidates.append(1)
+
+    seen: set[int] = set()
+    last_error: BaseException | None = None
+
+    for channels in channel_candidates:
+        if channels in seen:
+            continue
+        seen.add(channels)
+
+        try:
+            stream = audio_manager.open(
+                format=pyaudio.paInt16,
+                channels=channels,
+                rate=sample_rate,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=AUDIO_CHUNK_SIZE,
+                stream_callback=callback,
+                start=False,
+            )
+            sample_width = audio_manager.get_sample_size(pyaudio.paInt16)
+            return stream, sample_rate, channels, sample_width
+        except (OSError, ValueError) as error:
+            last_error = error
+
+    raise RuntimeError(
+        f"Could not open WASAPI loopback device '{loopback['name']}': "
+        f"{last_error or 'unsupported format'}"
+    )
+
+
+# ============================================================
+# FFMPEG CAPTURE
+# ============================================================
+
+
+def build_capture_command(
+    ffmpeg: str,
+    encoder: str,
+    fps: int,
+    sample_rate: int,
+    channels: int,
+    temporary_mkv: Path,
+) -> list[str]:
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "info",
+        "-nostats",
+        "-y",
+
+        # FFmpeg captures the desktop itself. gdigrab timestamps each frame at
+        # capture time. fps_mode=passthrough prevents FFmpeg from manufacturing
+        # duplicate frames to hide a slow capture operation.
+        "-thread_queue_size",
+        str(INPUT_QUEUE_PACKETS),
+        "-rtbufsize",
+        REALTIME_BUFFER_SIZE,
+        "-f",
+        "gdigrab",
+        "-draw_mouse",
+        "1",
+        "-framerate",
+        str(fps),
+        "-i",
+        "desktop",
+
+        # Python supplies native-clocked WASAPI loopback PCM through stdin.
+        # PCM duration comes solely from the number of actual sample frames;
+        # there is no guessed offset and no periodic async resampling.
+        "-thread_queue_size",
+        str(INPUT_QUEUE_PACKETS),
+        "-f",
+        "s16le",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        str(channels),
+        "-blocksize",
+        str(AUDIO_CHUNK_SIZE * channels * 2),
+        "-i",
+        "pipe:0",
+
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-fps_mode:v",
+        "passthrough",
+    ]
+
+    command.extend(encoder_arguments(encoder, fps))
+    command.extend(
+        [
+            "-c:a",
+            "aac",
+            "-b:a",
+            AUDIO_BITRATE,
+            "-max_muxing_queue_size",
+            "8192",
+            "-f",
+            "matroska",
+            str(temporary_mkv),
+        ]
+    )
+    return command
+
+
+CAPTURE_LOSS_PATTERNS = (
+    "frame dropped",
+    "buffer queue overflow",
+    "input buffer overrun",
+    "too full or near too full",
+    "non-monotonous dts",
+    "non monotonically increasing dts",
+    "queue input is backward in time",
+    "real-time buffer",
+)
+
+
+def contains_capture_loss(line: str) -> bool:
+    lower = line.lower()
+    return any(pattern in lower for pattern in CAPTURE_LOSS_PATTERNS)
+
+
+def creation_flags() -> int:
+    if sys.platform != "win32":
+        return 0
+
+    flags = 0
+    flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    flags |= int(getattr(subprocess, "ABOVE_NORMAL_PRIORITY_CLASS", 0))
+    return flags
+
+
+def stream_stderr(
+    process: subprocess.Popen[bytes],
+    log_path: Path,
+    video_ready_event: threading.Event,
+    video_ready_clock: list[float],
+    capture_loss_event: threading.Event,
 ) -> None:
-    """
-    Record system audio in an independent process.
+    assert process.stderr is not None
 
-    Using a process instead of a Python thread prevents screen capture,
-    frame conversion, and FFmpeg pipe writes from starving audio input.
-    """
-    audio_path = Path(audio_path_string)
+    with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
+        while True:
+            raw_line = process.stderr.readline()
+            if not raw_line:
+                break
 
-    audio_manager: pyaudio.PyAudio | None = None
-    stream: Any = None
-    wav_file: wave.Wave_write | None = None
+            line = raw_line.decode("utf-8", errors="replace")
+            print(line, end="")
+            log_file.write(line)
+            log_file.flush()
+
+            lower = line.lower()
+            if (
+                not video_ready_event.is_set()
+                and "gdigrab" in lower
+                and "capturing" in lower
+            ):
+                video_ready_clock[:] = [time.perf_counter()]
+                video_ready_event.set()
+
+            if contains_capture_loss(line):
+                capture_loss_event.set()
+
+
+def write_all(pipe: BinaryIO, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = pipe.write(view)
+        if written is None:
+            return
+        if written <= 0:
+            raise BrokenPipeError("FFmpeg audio pipe accepted no data.")
+        view = view[written:]
+
+
+def write_silence(
+    pipe: BinaryIO,
+    frame_count: int,
+    bytes_per_frame: int,
+) -> None:
+    if frame_count <= 0:
+        return
+
+    # Keep individual allocations small while allowing the writer to catch up
+    # quickly after a temporary scheduling delay.
+    block_frames = 16384
+    zero_block = bytes(block_frames * bytes_per_frame)
+
+    remaining = frame_count
+    while remaining > 0:
+        current = min(remaining, block_frames)
+        write_all(pipe, zero_block[: current * bytes_per_frame])
+        remaining -= current
+
+
+def audio_writer_main(
+    process: subprocess.Popen[bytes],
+    packets: queue.Queue[AudioPacket | None],
+    bytes_per_frame: int,
+    stats: AudioStats,
+    writer_finished: threading.Event,
+    capture_loss_event: threading.Event,
+) -> None:
+    assert process.stdin is not None
+    next_frame = 0
 
     try:
-        raise_audio_process_priority()
+        while True:
+            packet = packets.get()
+            if packet is None:
+                break
 
+            data = packet.data
+            start_frame = packet.start_frame
+            data_frames = len(data) // bytes_per_frame
+
+            # A zero-length packet is also used as an end-of-recording marker.
+            # Apply its timestamp first so a silent tail is represented by real
+            # PCM silence instead of shortening the audio track.
+            if start_frame > next_frame:
+                gap = start_frame - next_frame
+                write_silence(process.stdin, gap, bytes_per_frame)
+                stats.inserted_silence_frames += gap
+                next_frame += gap
+                stats.written_frames = next_frame
+
+            if data_frames <= 0:
+                continue
+
+            if start_frame < next_frame:
+                overlap = next_frame - start_frame
+                if overlap >= data_frames:
+                    stats.trimmed_overlap_frames += data_frames
+                    continue
+
+                trim_bytes = overlap * bytes_per_frame
+                data = data[trim_bytes:]
+                data_frames -= overlap
+                stats.trimmed_overlap_frames += overlap
+
+            write_all(process.stdin, data)
+            next_frame += data_frames
+            stats.written_frames = next_frame
+
+    except (BrokenPipeError, OSError, ValueError) as error:
+        stats.writer_error = str(error)
+        capture_loss_event.set()
+    finally:
+        try:
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        writer_finished.set()
+
+
+def stop_ffmpeg_cleanly(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+
+    # stdin carries PCM and therefore cannot also carry FFmpeg's interactive
+    # 'q'. A separate Windows process group lets CTRL_BREAK request a normal
+    # trailer write instead of corrupting the Matroska file.
+    if sys.platform == "win32" and hasattr(signal, "CTRL_BREAK_EVENT"):
+        try:
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+            process.wait(timeout=90)
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+        return
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def remux_to_mp4(ffmpeg: str, source_mkv: Path, target_mp4: Path) -> None:
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(source_mkv),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(target_mp4),
+    ]
+    result = subprocess.run(command, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(
+            "FFmpeg could not remux the recording to MP4 "
+            f"(exit code {result.returncode})."
+        )
+
+
+def print_command(command: Iterable[str]) -> None:
+    print("FFmpeg command:")
+    print(subprocess.list2cmdline(list(command)))
+    print()
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+
+def main() -> None:
+    try:
+        require_windows()
+        require_pyaudiowpatch()
+        ffmpeg = find_ffmpeg()
+        raise_python_priority()
+    except RuntimeError as error:
+        print(f"\nERROR: {error}")
+        sys.exit(1)
+
+    audio_manager: Any = None
+    stream: Any = None
+    process: subprocess.Popen[bytes] | None = None
+
+    normal_mp4, loss_mp4, temporary_mkv, log_path = make_output_paths()
+    capture_loss_event = threading.Event()
+    video_ready_event = threading.Event()
+    video_ready_clock: list[float] = []
+    writer_finished = threading.Event()
+    stop_audio_event = threading.Event()
+    packets: queue.Queue[AudioPacket | None] = queue.Queue()
+    stats = AudioStats()
+
+    callback_state: dict[str, Any] = {
+        "mmcss_initialized": False,
+        "timeline_initialized": False,
+        "first_adc_time": None,
+        "first_start_frame": 0,
+        "sequence_frame": 0,
+    }
+
+    try:
         audio_manager = pyaudio.PyAudio()
         loopback = find_default_wasapi_loopback(audio_manager)
-
-        device_index = int(loopback["index"])
         device_name = str(loopback["name"])
 
-        sample_rate = int(round(float(loopback["defaultSampleRate"])))
-        channels = int(loopback["maxInputChannels"])
+        # The callback is declared before the stream opens. It maps PortAudio's
+        # WASAPI capture clock onto the video timeline. If a callback arrives
+        # late, its original ADC time is retained rather than pretending that
+        # the sound occurred later.
+        def audio_callback(
+            in_data: bytes,
+            frame_count: int,
+            time_info: dict[str, float],
+            status_flags: int,
+        ) -> tuple[None, int]:
+            if not callback_state["mmcss_initialized"]:
+                enable_mmcss_for_current_thread()
+                callback_state["mmcss_initialized"] = True
 
-        if channels < 1:
-            raise RuntimeError(
-                f"Loopback device has no input channels: {device_name}"
+            if status_flags:
+                stats.callback_status_count += 1
+                capture_loss_event.set()
+
+            if in_data:
+                callback_perf = time.perf_counter()
+                adc_time = float(time_info.get("input_buffer_adc_time", 0.0))
+                current_time = float(time_info.get("current_time", 0.0))
+
+                first_adc = callback_state["first_adc_time"]
+                if not callback_state["timeline_initialized"]:
+                    # Convert the PortAudio clock difference into a local
+                    # monotonic estimate for when the first sample was captured.
+                    if adc_time > 0.0 and current_time >= adc_time:
+                        first_sample_perf = callback_perf - (
+                            current_time - adc_time
+                        )
+                    else:
+                        first_sample_perf = callback_perf
+
+                    video_zero = (
+                        video_ready_clock[0]
+                        if video_ready_clock
+                        else first_sample_perf
+                    )
+                    first_start_frame = round(
+                        (first_sample_perf - video_zero) * sample_rate
+                    )
+
+                    callback_state["first_adc_time"] = (
+                        adc_time if adc_time > 0.0 else None
+                    )
+                    callback_state["first_start_frame"] = first_start_frame
+                    callback_state["sequence_frame"] = first_start_frame
+                    callback_state["timeline_initialized"] = True
+                    first_adc = callback_state["first_adc_time"]
+
+                if first_adc is not None and adc_time > 0.0:
+                    start_frame = callback_state["first_start_frame"] + round(
+                        (adc_time - first_adc) * sample_rate
+                    )
+                    callback_state["sequence_frame"] = start_frame + frame_count
+                else:
+                    start_frame = int(callback_state["sequence_frame"])
+                    callback_state["sequence_frame"] = start_frame + frame_count
+
+                packets.put(AudioPacket(start_frame=start_frame, data=in_data))
+                stats.queued_packets += 1
+
+            return_code = (
+                pyaudio.paComplete
+                if stop_audio_event.is_set()
+                else pyaudio.paContinue
             )
+            return (None, return_code)
 
-        # Stereo is enough for ordinary screen recording.
-        channels = min(channels, 2)
+        # Open once to learn the exact native format, then launch FFmpeg with
+        # matching raw-PCM parameters.
+        # sample_rate is assigned by open_loopback_stream and referenced by the
+        # callback only after the stream has been fully created.
+        sample_rate = 0
+        stream, sample_rate, channels, sample_width = open_loopback_stream(
+            audio_manager,
+            loopback,
+            audio_callback,
+        )
+        bytes_per_frame = channels * sample_width
 
-        sample_format = pyaudio.paInt16
-        sample_width = audio_manager.get_sample_size(sample_format)
+        fps = FRAME_RATE if FRAME_RATE is not None else get_primary_refresh_rate()
+        fps = max(1, int(fps))
+        encoder = choose_video_encoder(ffmpeg)
 
-        wav_file = wave.open(str(audio_path), "wb")
-        wav_file.setnchannels(channels)
-        wav_file.setsampwidth(sample_width)
-        wav_file.setframerate(sample_rate)
-
-        # Blocking mode is intentional. PortAudio buffers data internally,
-        # while this dedicated process continuously drains that buffer.
-        stream = audio_manager.open(
-            format=sample_format,
+        command = build_capture_command(
+            ffmpeg=ffmpeg,
+            encoder=encoder,
+            fps=fps,
+            sample_rate=sample_rate,
             channels=channels,
-            rate=sample_rate,
-            input=True,
-            input_device_index=device_index,
-            frames_per_buffer=AUDIO_CHUNK_SIZE,
-            start=False,
+            temporary_mkv=temporary_mkv,
         )
 
-        result_queue.put(
-            {
-                "type": "ready",
-                "device_name": device_name,
-                "sample_rate": sample_rate,
-                "channels": channels,
-            }
+        print("=" * 74)
+        print("WINDOWS SCREEN RECORDER — WASAPI LOOPBACK")
+        print("=" * 74)
+        print("Desktop capture: FFmpeg gdigrab (entire virtual desktop)")
+        print(f"Maximum FPS:     {fps}")
+        print(f"System audio:    {device_name}")
+        print(f"Audio format:    {sample_rate} Hz, {channels} channel(s), 16-bit")
+        print("Audio source:    Windows WASAPI loopback (no Stereo Mix needed)")
+        print(f"Video encoder:   {encoder}")
+        print(f"Temporary file:  {temporary_mkv}")
+        print(f"Capture log:     {log_path}")
+        print()
+        print("Press ENTER to stop and safely finalize the MP4.")
+        print("=" * 74)
+        print_command(command)
+
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            creationflags=creation_flags(),
         )
 
-        # Signal that the audio device is initialized, but wait until
-        # video capture is ready before actually starting the stream.
-        ready_event.set()
+        stderr_thread = threading.Thread(
+            target=stream_stderr,
+            args=(
+                process,
+                log_path,
+                video_ready_event,
+                video_ready_clock,
+                capture_loss_event,
+            ),
+            name="FFmpegLogReader",
+            daemon=True,
+        )
+        stderr_thread.start()
 
-        while not start_event.wait(timeout=0.1):
-            if stop_event.is_set():
-                return
+        # gdigrab is the first FFmpeg input. Waiting for its initialization
+        # before starting WASAPI keeps the two first samples/frames naturally
+        # aligned without a hard-coded millisecond correction.
+        video_ready_event.wait(timeout=10)
+        if not video_ready_clock:
+            video_ready_clock[:] = [time.perf_counter()]
+            video_ready_event.set()
+
+        writer_thread = threading.Thread(
+            target=audio_writer_main,
+            args=(
+                process,
+                packets,
+                bytes_per_frame,
+                stats,
+                writer_finished,
+                capture_loss_event,
+            ),
+            name="WASAPIPcmWriter",
+            daemon=True,
+        )
+        writer_thread.start()
 
         stream.start_stream()
 
-        overflow_count = 0
+        try:
+            input()
+        except (EOFError, KeyboardInterrupt):
+            pass
 
-        while not stop_event.is_set():
+        stop_perf = time.perf_counter()
+        print("\nStopping recording...")
+
+        stop_audio_event.set()
+        try:
+            if stream.is_active():
+                stream.stop_stream()
+        except Exception:
+            pass
+
+        # Make the audio track end at the same monotonic stop point as video.
+        # When the endpoint was silent, this adds real silence instead of
+        # pulling later audio earlier or shortening the recording.
+        final_frame = max(
+            0,
+            round((stop_perf - video_ready_clock[0]) * sample_rate),
+        )
+        packets.put(AudioPacket(start_frame=final_frame, data=b""))
+        packets.put(None)
+
+        writer_thread.join(timeout=15)
+        if not writer_finished.is_set():
+            capture_loss_event.set()
             try:
-                audio_data = stream.read(
-                    AUDIO_CHUNK_SIZE,
-                    exception_on_overflow=False,
-                )
-            except OSError as error:
-                # Do not silently continue forever if the playback device
-                # was disconnected or changed.
-                raise RuntimeError(
-                    f"WASAPI audio read failed: {error}"
-                ) from error
+                if process.stdin is not None:
+                    process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
 
-            if audio_data:
-                wav_file.writeframesraw(audio_data)
+        stop_ffmpeg_cleanly(process)
+        stderr_thread.join(timeout=10)
 
-        # Read any final data already buffered by PortAudio.
-        for _ in range(4):
-            available = int(stream.get_read_available())
+        expected_interrupt_codes = {
+            0,
+            255,
+            -1073741510,  # Windows STATUS_CONTROL_C_EXIT as a signed value.
+            3221225786,   # The same status as an unsigned value.
+        }
+        if process.returncode not in expected_interrupt_codes:
+            capture_loss_event.set()
+            print(
+                f"Warning: FFmpeg exited with code {process.returncode}; "
+                "the output will be validated and labeled CAPTURE_LOSS."
+            )
 
-            if available <= 0:
-                break
+        if not temporary_mkv.exists() or temporary_mkv.stat().st_size == 0:
+            raise RuntimeError(
+                f"FFmpeg created no recording. See {log_path}"
+            )
 
-            frame_count = min(available, AUDIO_CHUNK_SIZE)
-
-            try:
-                final_data = stream.read(
-                    frame_count,
-                    exception_on_overflow=False,
-                )
-            except OSError:
-                break
-
-            if final_data:
-                wav_file.writeframesraw(final_data)
-
-        result_queue.put(
-            {
-                "type": "finished",
-                "overflow_count": overflow_count,
-            }
+        capture_loss = capture_loss_event.is_set()
+        target_mp4 = (
+            loss_mp4
+            if capture_loss and STRICT_CAPTURE_REPORTING
+            else normal_mp4
         )
 
-    except BaseException as error:
-        result_queue.put(
-            {
-                "type": "error",
-                "message": str(error),
-                "error_type": type(error).__name__,
-            }
+        remux_to_mp4(ffmpeg, temporary_mkv, target_mp4)
+
+        try:
+            temporary_mkv.unlink()
+        except OSError:
+            pass
+
+        size_mb = target_mp4.stat().st_size / (1024 * 1024)
+        duration_seconds = (
+            stats.written_frames / sample_rate if sample_rate else 0.0
         )
-        ready_event.set()
+
+        if capture_loss:
+            print("\nCAPTURE LOSS OR AN AUDIO CALLBACK WARNING WAS REPORTED.")
+            print(
+                "The file was deliberately labeled CAPTURE_LOSS rather than "
+                "being presented as exact."
+            )
+        else:
+            print("\nRecording completed without a reported capture overrun.")
+
+        print(f"File:              {target_mp4}")
+        print(f"Log:               {log_path}")
+        print(f"Size:              {size_mb:.2f} MB")
+        print(f"Audio timeline:    {duration_seconds:.3f} seconds")
+        print(f"WASAPI callbacks:  {stats.queued_packets}")
+        print(f"Inserted silence:  {stats.inserted_silence_frames} frames")
+        print(f"Trimmed overlap:   {stats.trimmed_overlap_frames} frames")
+        if stats.writer_error:
+            print(f"Audio pipe error:  {stats.writer_error}")
+
+        if capture_loss:
+            sys.exit(2)
+
+    except Exception as error:
+        print(f"\nERROR: {error}")
+
+        if process is not None and process.poll() is None:
+            try:
+                stop_audio_event.set()
+                packets.put(None)
+            except Exception:
+                pass
+            stop_ffmpeg_cleanly(process)
+
+        if temporary_mkv.exists():
+            print(f"Recoverable temporary recording: {temporary_mkv}")
+        print(f"Diagnostic log: {log_path}")
+        sys.exit(1)
 
     finally:
         if stream is not None:
@@ -317,15 +998,8 @@ def audio_process_main(
                     stream.stop_stream()
             except Exception:
                 pass
-
             try:
                 stream.close()
-            except Exception:
-                pass
-
-        if wav_file is not None:
-            try:
-                wav_file.close()
             except Exception:
                 pass
 
@@ -336,438 +1010,5 @@ def audio_process_main(
                 pass
 
 
-# ============================================================
-# SCREEN CAPTURE
-# ============================================================
-
-def get_capture_region(
-    screen_capture: mss.MSS,
-) -> dict[str, int]:
-    monitor_index = 0 if CAPTURE_ALL_MONITORS else 1
-    monitor = screen_capture.monitors[monitor_index]
-
-    width = int(monitor["width"])
-    height = int(monitor["height"])
-
-    # H.264 yuv420p requires even dimensions.
-    width -= width % 2
-    height -= height % 2
-
-    return {
-        "left": int(monitor["left"]),
-        "top": int(monitor["top"]),
-        "width": width,
-        "height": height,
-    }
-
-
-def build_video_command(
-    ffmpeg: str,
-    video_path: Path,
-    width: int,
-    height: int,
-) -> list[str]:
-    return [
-        ffmpeg,
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-y",
-
-        # Timestamp each incoming raw frame from its real arrival time.
-        # Without this, FFmpeg assumes every received frame was captured at
-        # an exact 30 FPS.  Any delayed/missed capture then shortens video
-        # time and makes otherwise-correct audio drift behind the picture.
-        "-use_wallclock_as_timestamps",
-        "1",
-        "-fflags",
-        "+genpts",
-
-        # Raw BGRA frames arrive through stdin.
-        "-f",
-        "rawvideo",
-        "-pixel_format",
-        "bgra",
-        "-video_size",
-        f"{width}x{height}",
-        "-framerate",
-        str(FRAME_RATE),
-        "-i",
-        "pipe:0",
-
-        # Normalize the wall-clock timestamps to start at zero while keeping
-        # their real spacing.  VFR is intentional: missed screen frames become
-        # a slightly longer held image instead of speeding up the whole video.
-        "-vf",
-        "setpts=PTS-STARTPTS",
-
-        # Video only at this stage.
-        "-an",
-
-        "-c:v",
-        "libx264",
-        "-preset",
-        VIDEO_PRESET,
-        "-crf",
-        str(CRF),
-        "-pix_fmt",
-        "yuv420p",
-
-        # Avoid B-frame reordering/latency and preserve wall-clock timing.
-        "-tune",
-        "zerolatency",
-        "-fps_mode",
-        "vfr",
-
-        str(video_path),
-    ]
-
-
-# ============================================================
-# FINAL MUX
-# ============================================================
-
-def mux_recording(
-    ffmpeg: str,
-    video_path: Path,
-    audio_path: Path,
-    final_path: Path,
-) -> None:
-    """Combine video and audio without periodic sample insertion/removal."""
-    advance_seconds = max(0, AUDIO_ADVANCE_MS) / 1000.0
-
-    # The WAV already has continuous sample timestamps.  Aggressive
-    # aresample=async correction can periodically insert/drop samples and
-    # sound like tiny clicks, skips, or joins every few seconds.  Only apply
-    # the fixed device-latency trim here.
-    audio_filter = (
-        f"atrim=start={advance_seconds:.6f},"
-        "asetpts=PTS-STARTPTS,"
-        "apad=pad_dur=1"
-    )
-
-    command = [
-        ffmpeg,
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-y",
-        "-i",
-        str(video_path),
-        "-i",
-        str(audio_path),
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        "-c:v",
-        "copy",
-        "-c:a",
-        "aac",
-        "-b:a",
-        AUDIO_BITRATE,
-        "-af",
-        audio_filter,
-        "-shortest",
-        "-movflags",
-        "+faststart",
-        str(final_path),
-    ]
-
-    result = subprocess.run(command, check=False)
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            "FFmpeg could not combine the video and audio. "
-            f"Exit code: {result.returncode}"
-        )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main() -> None:
-    if sys.platform != "win32":
-        print("ERROR: This recorder is designed for Windows.")
-        sys.exit(1)
-
-    try:
-        ffmpeg = find_executable("ffmpeg")
-    except RuntimeError as error:
-        print(f"\nERROR: {error}")
-        sys.exit(1)
-
-    final_path, video_path, audio_path = make_output_paths()
-
-    # Windows requires spawn. Creating one explicit context also ensures
-    # every multiprocessing object belongs to the same context.
-    process_context = mp.get_context("spawn")
-
-    audio_stop_event = process_context.Event()
-    audio_ready_event = process_context.Event()
-    capture_start_event = process_context.Event()
-    audio_result_queue = process_context.Queue()
-
-    audio_process = process_context.Process(
-        target=audio_process_main,
-        args=(
-            str(audio_path),
-            audio_stop_event,
-            audio_ready_event,
-            capture_start_event,
-            audio_result_queue,
-        ),
-        name="WASAPILoopbackRecorder",
-        daemon=False,
-    )
-
-    audio_process.start()
-
-    if not audio_ready_event.wait(timeout=15):
-        audio_stop_event.set()
-        audio_process.terminate()
-        audio_process.join(timeout=5)
-
-        print("\nERROR: System-audio recording did not initialize.")
-        sys.exit(1)
-
-    try:
-        audio_status = audio_result_queue.get(timeout=3)
-    except queue.Empty:
-        audio_stop_event.set()
-        audio_process.terminate()
-        audio_process.join(timeout=5)
-
-        print("\nERROR: Audio process returned no device information.")
-        sys.exit(1)
-
-    if audio_status.get("type") == "error":
-        audio_stop_event.set()
-        audio_process.join(timeout=5)
-
-        print("\nERROR: Could not start system-audio capture.")
-        print(audio_status.get("message", "Unknown audio error"))
-        sys.exit(1)
-
-    if audio_status.get("type") != "ready":
-        audio_stop_event.set()
-        audio_process.terminate()
-        audio_process.join(timeout=5)
-
-        print(f"\nERROR: Unexpected audio response: {audio_status}")
-        sys.exit(1)
-
-    device_name = audio_status["device_name"]
-    sample_rate = audio_status["sample_rate"]
-    channels = audio_status["channels"]
-
-    recording_stop_event = threading.Event()
-
-    def wait_for_enter() -> None:
-        try:
-            input()
-        except (EOFError, KeyboardInterrupt):
-            pass
-        finally:
-            recording_stop_event.set()
-
-    keyboard_thread = threading.Thread(
-        target=wait_for_enter,
-        name="EnterKeyListener",
-        daemon=True,
-    )
-
-    video_process: subprocess.Popen[bytes] | None = None
-    video_return_code = -1
-    recording_error: BaseException | None = None
-    frames_written = 0
-
-    try:
-        # mss.MSS replaces the deprecated mss.mss constructor.
-        with mss.MSS() as screen_capture:
-            region = get_capture_region(screen_capture)
-
-            width = region["width"]
-            height = region["height"]
-
-            video_command = build_video_command(
-                ffmpeg=ffmpeg,
-                video_path=video_path,
-                width=width,
-                height=height,
-            )
-
-            video_process = subprocess.Popen(
-                video_command,
-                stdin=subprocess.PIPE,
-                bufsize=0,
-            )
-
-            if video_process.stdin is None:
-                raise RuntimeError(
-                    "FFmpeg did not open its video input pipe."
-                )
-
-            print("=" * 70)
-            print("FULL-DESKTOP SCREEN RECORDER")
-            print("=" * 70)
-            print(f"Capture area:    {width}x{height}")
-            print(f"Frame rate:      {FRAME_RATE} FPS")
-            print(f"Audio device:    {device_name}")
-            print(f"Audio format:    {sample_rate} Hz, {channels} channel(s)")
-            print(f"Audio engine:    PyAudioWPatch WASAPI loopback")
-            print(f"Audio advance:   {AUDIO_ADVANCE_MS} ms")
-            print(f"Final output:    {final_path}")
-            print()
-            print("Recording is active.")
-            print("Press ENTER to stop and safely finalize the MP4.")
-            print("=" * 70)
-
-            keyboard_thread.start()
-
-            frame_interval = 1.0 / FRAME_RATE
-
-            # Start audio only after FFmpeg and desktop capture are ready.
-            capture_start_event.set()
-            next_frame_time = time.perf_counter()
-
-            while not recording_stop_event.is_set():
-                if video_process.poll() is not None:
-                    raise RuntimeError(
-                        "FFmpeg stopped unexpectedly while recording."
-                    )
-
-                current_time = time.perf_counter()
-                remaining = next_frame_time - current_time
-
-                if remaining > 0:
-                    time.sleep(remaining)
-
-                if recording_stop_event.is_set():
-                    break
-
-                frame = screen_capture.grab(region)
-
-                try:
-                    video_process.stdin.write(frame.raw)
-                except BrokenPipeError as error:
-                    raise RuntimeError(
-                        "FFmpeg closed the video input unexpectedly."
-                    ) from error
-
-                frames_written += 1
-                next_frame_time += frame_interval
-
-                # If capture/encoding was slow, skip expired capture slots.
-                # Do not reset the recording clock and do not send a burst.
-                # FFmpeg's wall-clock timestamps preserve the real gap, so
-                # audio remains synchronized instead of drifting later.
-                current_time = time.perf_counter()
-                if next_frame_time < current_time:
-                    missed_slots = int(
-                        (current_time - next_frame_time) / frame_interval
-                    ) + 1
-                    next_frame_time += missed_slots * frame_interval
-
-    except KeyboardInterrupt:
-        recording_stop_event.set()
-
-    except BaseException as error:
-        recording_error = error
-        recording_stop_event.set()
-
-    finally:
-        print("\nStopping recording...")
-
-        # Stop audio promptly, independently of FFmpeg finalization.
-        audio_stop_event.set()
-
-        if video_process is not None:
-            if video_process.stdin is not None:
-                try:
-                    video_process.stdin.close()
-                except (BrokenPipeError, OSError):
-                    pass
-
-            try:
-                video_return_code = video_process.wait(timeout=90)
-            except subprocess.TimeoutExpired:
-                video_process.terminate()
-
-                try:
-                    video_return_code = video_process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    video_process.kill()
-                    video_return_code = video_process.wait()
-
-        audio_process.join(timeout=20)
-
-        if audio_process.is_alive():
-            audio_process.terminate()
-            audio_process.join(timeout=5)
-
-    if recording_error is not None:
-        print(f"\nERROR WHILE RECORDING:\n{recording_error}")
-        print(f"Temporary video: {video_path}")
-        print(f"Temporary audio: {audio_path}")
-        sys.exit(1)
-
-    if video_return_code != 0:
-        print(
-            "\nERROR: FFmpeg video encoding failed with "
-            f"exit code {video_return_code}."
-        )
-        print(f"Temporary audio: {audio_path}")
-        sys.exit(1)
-
-    # Check for a late error from the audio process.
-    while True:
-        try:
-            status = audio_result_queue.get_nowait()
-        except queue.Empty:
-            break
-
-        if status.get("type") == "error":
-            print("\nERROR: System-audio capture failed.")
-            print(status.get("message", "Unknown audio error"))
-            print(f"Temporary video: {video_path}")
-            sys.exit(1)
-
-    if not video_path.exists() or video_path.stat().st_size == 0:
-        print("\nERROR: No temporary video was created.")
-        sys.exit(1)
-
-    if not audio_path.exists() or audio_path.stat().st_size <= 44:
-        print("\nERROR: No system audio was recorded.")
-        print(f"Temporary video: {video_path}")
-        sys.exit(1)
-
-    print("Combining video and system audio...")
-
-    try:
-        mux_recording(
-            ffmpeg=ffmpeg,
-            video_path=video_path,
-            audio_path=audio_path,
-            final_path=final_path,
-        )
-    except RuntimeError as error:
-        print(f"\nERROR: {error}")
-        print(f"Temporary video: {video_path}")
-        print(f"Temporary audio: {audio_path}")
-        sys.exit(1)
-
-    remove_file(video_path)
-    remove_file(audio_path)
-
-    size_mb = final_path.stat().st_size / (1024 * 1024)
-
-    print("\nRecording completed successfully.")
-    print(f"File: {final_path}")
-    print(f"Size: {size_mb:.2f} MB")
-
-
 if __name__ == "__main__":
-    mp.freeze_support()
     main()
