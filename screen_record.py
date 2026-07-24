@@ -53,20 +53,21 @@ STRICT_CAPTURE_REPORTING = True
 # ============================================================
 
 @dataclass(slots=True)
-class AudioPacket:
-    """PCM captured at a specific frame position on the video timeline."""
+class AudioChunk:
+    """One contiguous PCM block, optionally preceded by deliberate silence."""
 
-    start_frame: int
-    data: bytes
+    data: bytes = b""
+    silence_frames: int = 0
 
 
 @dataclass(slots=True)
 class AudioStats:
     callback_status_count: int = 0
     queued_packets: int = 0
+    captured_frames: int = 0
     written_frames: int = 0
-    inserted_silence_frames: int = 0
-    trimmed_overlap_frames: int = 0
+    initial_silence_frames: int = 0
+    tail_silence_frames: int = 0
     writer_error: str | None = None
 
 
@@ -566,52 +567,42 @@ def write_silence(
 
 def audio_writer_main(
     process: subprocess.Popen[bytes],
-    packets: queue.Queue[AudioPacket | None],
+    packets: queue.Queue[AudioChunk | None],
     bytes_per_frame: int,
     stats: AudioStats,
     writer_finished: threading.Event,
     capture_loss_event: threading.Event,
 ) -> None:
+    """Forward WASAPI PCM in capture order without per-buffer surgery.
+
+    PortAudio callback timestamps can move by a few samples from one callback
+    to the next. Treating that harmless clock noise as real gaps/overlaps causes
+    a tiny silence insertion or sample deletion every buffer, which is heard as
+    a metallic echo or vibrating voice. Only the initial offset and final tail
+    are represented as silence; captured PCM remains byte-for-byte contiguous.
+    """
     assert process.stdin is not None
-    next_frame = 0
 
     try:
         while True:
-            packet = packets.get()
-            if packet is None:
+            chunk = packets.get()
+            if chunk is None:
                 break
 
-            data = packet.data
-            start_frame = packet.start_frame
-            data_frames = len(data) // bytes_per_frame
+            if chunk.silence_frames > 0:
+                write_silence(
+                    process.stdin,
+                    chunk.silence_frames,
+                    bytes_per_frame,
+                )
+                stats.written_frames += chunk.silence_frames
 
-            # A zero-length packet is also used as an end-of-recording marker.
-            # Apply its timestamp first so a silent tail is represented by real
-            # PCM silence instead of shortening the audio track.
-            if start_frame > next_frame:
-                gap = start_frame - next_frame
-                write_silence(process.stdin, gap, bytes_per_frame)
-                stats.inserted_silence_frames += gap
-                next_frame += gap
-                stats.written_frames = next_frame
-
-            if data_frames <= 0:
-                continue
-
-            if start_frame < next_frame:
-                overlap = next_frame - start_frame
-                if overlap >= data_frames:
-                    stats.trimmed_overlap_frames += data_frames
+            if chunk.data:
+                usable_bytes = (len(chunk.data) // bytes_per_frame) * bytes_per_frame
+                if usable_bytes <= 0:
                     continue
-
-                trim_bytes = overlap * bytes_per_frame
-                data = data[trim_bytes:]
-                data_frames -= overlap
-                stats.trimmed_overlap_frames += overlap
-
-            write_all(process.stdin, data)
-            next_frame += data_frames
-            stats.written_frames = next_frame
+                write_all(process.stdin, chunk.data[:usable_bytes])
+                stats.written_frames += usable_bytes // bytes_per_frame
 
     except (BrokenPipeError, OSError, ValueError) as error:
         stats.writer_error = str(error)
@@ -704,15 +695,13 @@ def main() -> None:
     video_ready_clock: list[float] = []
     writer_finished = threading.Event()
     stop_audio_event = threading.Event()
-    packets: queue.Queue[AudioPacket | None] = queue.Queue()
+    packets: queue.Queue[AudioChunk | None] = queue.Queue()
     stats = AudioStats()
 
     callback_state: dict[str, Any] = {
         "mmcss_initialized": False,
-        "timeline_initialized": False,
-        "first_adc_time": None,
-        "first_start_frame": 0,
-        "sequence_frame": 0,
+        "first_packet_initialized": False,
+        "captured_frames": 0,
     }
 
     try:
@@ -720,10 +709,9 @@ def main() -> None:
         loopback = find_default_wasapi_loopback(audio_manager)
         device_name = str(loopback["name"])
 
-        # The callback is declared before the stream opens. It maps PortAudio's
-        # WASAPI capture clock onto the video timeline. If a callback arrives
-        # late, its original ADC time is retained rather than pretending that
-        # the sound occurred later.
+        # The callback is declared before the stream opens. The first WASAPI
+        # buffer is aligned once to the video start; after that, PCM is forwarded
+        # continuously in capture order with no per-buffer insertions or cuts.
         def audio_callback(
             in_data: bytes,
             frame_count: int,
@@ -739,14 +727,17 @@ def main() -> None:
                 capture_loss_event.set()
 
             if in_data:
-                callback_perf = time.perf_counter()
-                adc_time = float(time_info.get("input_buffer_adc_time", 0.0))
-                current_time = float(time_info.get("current_time", 0.0))
+                # Align the beginning once. Do NOT recalculate a position for
+                # every callback: WASAPI/PortAudio callback timestamps contain
+                # small scheduling jitter, and repeatedly inserting/trimming
+                # samples at those boundaries creates the audible shaking echo.
+                if not callback_state["first_packet_initialized"]:
+                    callback_perf = time.perf_counter()
+                    adc_time = float(
+                        time_info.get("input_buffer_adc_time", 0.0)
+                    )
+                    current_time = float(time_info.get("current_time", 0.0))
 
-                first_adc = callback_state["first_adc_time"]
-                if not callback_state["timeline_initialized"]:
-                    # Convert the PortAudio clock difference into a local
-                    # monotonic estimate for when the first sample was captured.
                     if adc_time > 0.0 and current_time >= adc_time:
                         first_sample_perf = callback_perf - (
                             current_time - adc_time
@@ -759,29 +750,25 @@ def main() -> None:
                         if video_ready_clock
                         else first_sample_perf
                     )
-                    first_start_frame = round(
-                        (first_sample_perf - video_zero) * sample_rate
+                    initial_silence = max(
+                        0,
+                        round((first_sample_perf - video_zero) * sample_rate),
                     )
 
-                    callback_state["first_adc_time"] = (
-                        adc_time if adc_time > 0.0 else None
-                    )
-                    callback_state["first_start_frame"] = first_start_frame
-                    callback_state["sequence_frame"] = first_start_frame
-                    callback_state["timeline_initialized"] = True
-                    first_adc = callback_state["first_adc_time"]
+                    # A very large value indicates an unusable clock report.
+                    # Clamp it rather than blocking the real-time callback.
+                    initial_silence = min(initial_silence, sample_rate * 2)
+                    if initial_silence:
+                        packets.put(
+                            AudioChunk(silence_frames=initial_silence)
+                        )
+                    stats.initial_silence_frames = initial_silence
+                    callback_state["first_packet_initialized"] = True
 
-                if first_adc is not None and adc_time > 0.0:
-                    start_frame = callback_state["first_start_frame"] + round(
-                        (adc_time - first_adc) * sample_rate
-                    )
-                    callback_state["sequence_frame"] = start_frame + frame_count
-                else:
-                    start_frame = int(callback_state["sequence_frame"])
-                    callback_state["sequence_frame"] = start_frame + frame_count
-
-                packets.put(AudioPacket(start_frame=start_frame, data=in_data))
+                packets.put(AudioChunk(data=in_data))
                 stats.queued_packets += 1
+                stats.captured_frames += frame_count
+                callback_state["captured_frames"] += frame_count
 
             return_code = (
                 pyaudio.paComplete
@@ -894,14 +881,22 @@ def main() -> None:
         except Exception:
             pass
 
-        # Make the audio track end at the same monotonic stop point as video.
-        # When the endpoint was silent, this adds real silence instead of
-        # pulling later audio earlier or shortening the recording.
+        # Add silence only at the end, never between captured callbacks.
+        # This keeps the audio track aligned with the recording stop time while
+        # preserving every captured sample as one uninterrupted PCM sequence.
         final_frame = max(
             0,
             round((stop_perf - video_ready_clock[0]) * sample_rate),
         )
-        packets.put(AudioPacket(start_frame=final_frame, data=b""))
+        captured_total = (
+            stats.initial_silence_frames
+            + int(callback_state["captured_frames"])
+        )
+        tail_silence = max(0, final_frame - captured_total)
+        tail_silence = min(tail_silence, sample_rate * 2)
+        if tail_silence:
+            packets.put(AudioChunk(silence_frames=tail_silence))
+        stats.tail_silence_frames = tail_silence
         packets.put(None)
 
         writer_thread.join(timeout=15)
@@ -967,8 +962,9 @@ def main() -> None:
         print(f"Size:              {size_mb:.2f} MB")
         print(f"Audio timeline:    {duration_seconds:.3f} seconds")
         print(f"WASAPI callbacks:  {stats.queued_packets}")
-        print(f"Inserted silence:  {stats.inserted_silence_frames} frames")
-        print(f"Trimmed overlap:   {stats.trimmed_overlap_frames} frames")
+        print(f"Captured audio:    {stats.captured_frames} frames")
+        print(f"Initial silence:   {stats.initial_silence_frames} frames")
+        print(f"Tail silence:      {stats.tail_silence_frames} frames")
         if stats.writer_error:
             print(f"Audio pipe error:  {stats.writer_error}")
 
