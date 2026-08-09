@@ -1,0 +1,110 @@
+:root {
+  font-family: Arial, Helvetica, sans-serif;
+  color: #202124;
+  background: #fff;
+}
+
+body {
+  width: 340px;
+  margin: 0;
+}
+
+main {
+  padding: 16px;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.intro,
+.warning,
+small,
+#status {
+  line-height: 1.4;
+}
+
+.intro {
+  margin: 0 0 14px;
+  color: #5f6368;
+}
+
+label {
+  display: block;
+  margin: 12px 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+input[type="number"] {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 5px;
+  padding: 8px;
+  border: 1px solid #dadce0;
+  border-radius: 6px;
+}
+
+.check-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 500;
+}
+
+.check-row input {
+  margin: 0;
+}
+
+small {
+  display: block;
+  margin-top: 4px;
+  color: #5f6368;
+  font-weight: 400;
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+button {
+  flex: 1;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 6px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.primary {
+  background: #1a73e8;
+  color: #fff;
+}
+
+.danger {
+  background: #fce8e6;
+  color: #b3261e;
+}
+
+#status {
+  min-height: 20px;
+  margin: 12px 0 0;
+  font-size: 13px;
+}
+
+.warning {
+  margin: 10px 0 0;
+  padding: 9px;
+  border-radius: 6px;
+  background: #fff8e1;
+  color: #6f4e00;
+  font-size: 12px;
+}

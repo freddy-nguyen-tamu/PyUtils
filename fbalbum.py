@@ -50,7 +50,13 @@ from selenium.webdriver.firefox.options import Options
 # START_URL = "https://www.facebook.com/photo.php?fbid=2085505352012211&set=pb.100016582998481.-2207520000&type=3"
 # START_URL = "https://www.facebook.com/photo.php?fbid=27693852626923966&set=pb.100001778033019.-2207520000&type=3"
 # START_URL = "https://www.facebook.com/photo.php?fbid=10113942486931311&set=pb.9010646.-2207520000&type=3"
-START_URL = "https://www.facebook.com/photo.php?fbid=122291538656165504&set=pb.61554965143709.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=122291538656165504&set=pb.61554965143709.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=2401020296766027&set=pb.100005742404966.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=1268414296925237&set=t.100004527672162&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=3709769422600367&set=pb.100007020363583.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=2456355921348144&set=t.100007909695725&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=2211984685953584&set=pb.100014262227006.-2207520000&type=3"
+START_URL = "https://www.facebook.com/photo.php?fbid=2129339194093893&set=pb.100010534987840.-2207520000&type=3"
 
 OUT_DIR = "fb_photos"
 

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gmail Merged TXT Exporter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Gmail → one TXT</h1>
+    <p class="intro">Open a Gmail inbox, label, or search-results page, then start the export.</p>
+
+    <label class="check-row">
+      <input id="startFromFirst" type="checkbox" checked>
+      <span>Start from page 1</span>
+    </label>
+
+    <label>
+      Pages to scan
+      <input id="maxPages" type="number" min="0" max="9999" value="0">
+      <small>0 means continue until Gmail has no older page.</small>
+    </label>
+
+    <label>
+      Delay between conversations (ms)
+      <input id="delayMs" type="number" min="300" max="10000" step="100" value="900">
+      <small>Increase this if Gmail loads slowly.</small>
+    </label>
+
+    <label class="check-row">
+      <input id="includePreview" type="checkbox" checked>
+      <span>Include inbox-row preview text</span>
+    </label>
+
+    <div class="buttons">
+      <button id="start" class="primary">Start export</button>
+      <button id="stop" class="danger" disabled>Stop</button>
+    </div>
+
+    <p id="status" role="status">Ready.</p>
+    <p class="warning">Keep this Gmail tab open. Opening unread mail through Gmail’s interface can mark it as read.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Gmail Merged TXT Exporter",
+  "version": "1.0.0",
+  "description": "Exports messages visible through Gmail's inbox/search pages into one merged TXT file.",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://mail.google.com/*"
+  ],
+  "action": {
+    "default_title": "Export Gmail to TXT",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mail.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
