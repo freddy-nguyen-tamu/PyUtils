@@ -1,24 +1,10 @@
 import os
 import time
-import re
-import requests
+
+import groq_dynamic
 
 # ---------- Config ----------
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-# Load Groq API keys in this order:
-# GROQ_API_KEY, GROQ_API_KEY1, GROQ_API_KEY2, ..., GROQ_API_KEY9
-GROQ_API_KEYS = []
-
-base_key = os.getenv("GROQ_API_KEY")
-if base_key:
-    GROQ_API_KEYS.append(("GROQ_API_KEY", base_key))
-
-for i in range(1, 10):
-    key_name = f"GROQ_API_KEY{i}"
-    key_value = os.getenv(key_name)
-    if key_value:
-        GROQ_API_KEYS.append((key_name, key_value))
+GROQ_API_KEYS = groq_dynamic.load_groq_keys()
 
 if not GROQ_API_KEYS:
     raise SystemExit(
@@ -31,27 +17,6 @@ print(
     + ", ".join(name for name, _ in GROQ_API_KEYS)
 )
 
-
-def make_groq_headers(api_key: str) -> dict:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
-
-# Models to rotate through.
-# Put your highest TPM models first.
-GROQ_MODELS = [
-    "meta-llama/llama-4-scout-17b-16e-instruct",  # 30K TPM
-    "groq/compound",                              # 70K TPM
-    "groq/compound-mini",                         # 70K TPM
-    "llama-3.3-70b-versatile",                    # 12K TPM
-    "openai/gpt-oss-120b",                        # 8K TPM
-    "openai/gpt-oss-20b",                         # 8K TPM
-    "qwen/qwen3-32b",                             # 6K TPM
-    "llama-3.1-8b-instant",                       # 6K TPM
-    "allam-2-7b",                                 # 6K TPM
-]
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "essays_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -76,174 +41,22 @@ TIMEOUT = 120
 
 
 # ---------- Helpers ----------
-class GroqAPIError(Exception):
-    def __init__(
-        self,
-        status_code,
-        text,
-        retry_after=None,
-        *,
-        key_name=None,
-        model=None,
-    ):
-        self.status_code = status_code
-        self.text = text
-        self.retry_after = retry_after
-        self.key_name = key_name
-        self.model = model
-        super().__init__(f"Groq API error: {status_code} {text}")
-
-
-def extract_retry_seconds(resp: requests.Response) -> float | None:
+def ask_groq_auto_switch(prompt: str) -> tuple[str, str, str]:
     """
-    Tries to find retry time from:
-    1. Retry-After header
-    2. Groq error text like: "Please try again in 32.32s"
+    Uses Groq model discovery, then tries every loaded model/key combination.
     """
-    retry_after = resp.headers.get("Retry-After")
-    if retry_after:
-        try:
-            return float(retry_after)
-        except ValueError:
-            pass
-
-    try:
-        text = resp.text
-    except Exception:
-        return None
-
-    match = re.search(r"try again in ([0-9.]+)s", text, re.IGNORECASE)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            pass
-
-    return None
-
-
-def ask_groq_with_model_and_key(
-    prompt: str,
-    model: str,
-    key_name: str,
-    api_key: str,
-    *,
-    max_tokens: int = MAX_TOKENS,
-    temperature: float = TEMPERATURE,
-    timeout: int = TIMEOUT,
-) -> str:
-    payload = {
-        "model": model,
-        "messages": [
+    data = groq_dynamic.groq_chat_try_all_models(
+        [
             {"role": "system", "content": SYSTEM_MESSAGE},
             {"role": "user", "content": prompt},
         ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-
-    try:
-        resp = requests.post(
-            GROQ_API_URL,
-            headers=make_groq_headers(api_key),
-            json=payload,
-            timeout=timeout,
-        )
-    except requests.exceptions.RequestException as e:
-        raise GroqAPIError(
-            0,
-            f"Network/request error: {e}",
-            key_name=key_name,
-            model=model,
-        )
-
-    if resp.status_code != 200:
-        retry_after = extract_retry_seconds(resp)
-        raise GroqAPIError(
-            resp.status_code,
-            resp.text,
-            retry_after=retry_after,
-            key_name=key_name,
-            model=model,
-        )
-
-    data = resp.json()
-    content = data["choices"][0]["message"]["content"]
-    return content.strip()
-
-
-def ask_groq_auto_switch(prompt: str) -> tuple[str, str, str]:
-    """
-    Tries every loaded Groq API key for each model before sleeping.
-
-    Order:
-    - model 1 + GROQ_API_KEY
-    - model 1 + GROQ_API_KEY1
-    - model 1 + GROQ_API_KEY2
-    - ...
-    - model 1 + GROQ_API_KEY9
-    - model 2 + GROQ_API_KEY
-    - model 2 + GROQ_API_KEY1
-    - ...
-
-    It only sleeps after every loaded key/model combination fails for the round.
-    """
-    last_error = None
-
-    while True:
-        retry_times = []
-
-        for model in GROQ_MODELS:
-            print(f"Trying model: {model}")
-
-            for key_name, api_key in GROQ_API_KEYS:
-                print(f"  Trying key: {key_name}")
-
-                try:
-                    essay = ask_groq_with_model_and_key(prompt, model, key_name, api_key)
-                    return essay, model, key_name
-
-                except GroqAPIError as e:
-                    last_error = e
-
-                    if e.retry_after is not None:
-                        retry_times.append(e.retry_after)
-
-                    # Recoverable errors: switch to next key first.
-                    if e.status_code in [0, 408, 409, 429, 500, 502, 503, 504]:
-                        print(f"  Key/model failed temporarily: {key_name} + {model}")
-                        print(f"  Status: {e.status_code}")
-                        if e.retry_after is not None:
-                            print(f"  Suggested retry after: {e.retry_after:.2f}s")
-                        print("  Trying next key before sleeping...\n")
-                        continue
-
-                    # Non-recoverable errors, like bad request/model not available.
-                    # Still try the next key/model instead of crashing immediately.
-                    print(f"  Key/model failed permanently or unexpectedly: {key_name} + {model}")
-                    print(f"  Status: {e.status_code}")
-                    print(e.text)
-                    print("  Trying next key/model...\n")
-                    continue
-
-            print(f"All loaded keys failed for model: {model}")
-            print("Switching to next model...\n")
-
-        # If every key for every model failed, wait and try the whole list again.
-        if retry_times:
-            wait_time = min(retry_times) + 2
-        else:
-            wait_time = 15
-
-        print("All models and all loaded Groq API keys failed this round.")
-        print(
-            f"Waiting {wait_time:.2f}s, then retrying from "
-            f"{GROQ_MODELS[0]} + GROQ_API_KEY...\n"
-        )
-        time.sleep(wait_time)
-
-        if last_error is None:
-            raise RuntimeError("Every model/key failed, but no error details were captured.")
+        max_tokens=MAX_TOKENS,
+        temperature=TEMPERATURE,
+        timeout=TIMEOUT,
+    )
+    meta = data.get("_groq", {})
+    essay = data["choices"][0]["message"]["content"].strip()
+    return essay, meta.get("model", "auto"), meta.get("key_name", "unknown")
 
 
 def write_text_file(path: str, text: str) -> None:

@@ -1,23 +1,19 @@
 import os
 import json
-import requests
 from pathlib import Path, PureWindowsPath
 from mutagen.easyid3 import EasyID3
 from mutagen.mp3 import MP3
 import sys
 import time
 import win32com.client
+import groq_dynamic
 
 # ====================================
 # CONFIGURATION
 # ====================================
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEYS = groq_dynamic.load_groq_keys()
 BATCH_SIZE = 20
 PROGRESS_FILE = "rename_progress.json"
-
-# Groq API settings
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.1-8b-instant"
 
 # ====================================
 # HELPER FUNCTIONS
@@ -257,8 +253,8 @@ def format_artist_name(artist):
 
 def ask_groq_batch(file_paths):
     """Ask Groq API to extract metadata for a batch of files."""
-    if not GROQ_API_KEY:
-        print(" GROQ_API_KEY environment variable not set!")
+    if not GROQ_API_KEYS:
+        print(" No Groq API keys found. Set GROQ_API_KEY or GROQ_API_KEY1 through GROQ_API_KEY9.")
         sys.exit(1)
     
     file_names = [f.name for f in file_paths]
@@ -296,28 +292,20 @@ Output format (JSON only, no markdown):
 }}
 """
     
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [
+    try:
+        response = groq_dynamic.groq_chat_try_all_models(
+            [
             {"role": "system", "content": system_message},
             {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.1
-    }
-    
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=30)
-        
-        if response.status_code != 200:
-            print(f" Groq API error {response.status_code}: {response.text}")
-            return []
-        
-        resp_json = response.json()
+            ],
+            max_tokens=900,
+            temperature=0.1,
+            timeout=30,
+            max_retry_rounds=6,
+            json_mode=True,
+        )
+
+        resp_json = response
         json_text = resp_json["choices"][0]["message"]["content"].strip()
         
         if "```" in json_text:

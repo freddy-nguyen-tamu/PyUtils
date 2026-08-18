@@ -14,6 +14,7 @@ import unicodedata
 import requests
 import numpy as np
 
+import groq_dynamic
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 try:
@@ -27,20 +28,7 @@ from playwright.sync_api import sync_playwright
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-GROQ_API_KEYS = []
-
-base_key = os.getenv("GROQ_API_KEY")
-if base_key:
-    GROQ_API_KEYS.append(("GROQ_API_KEY", base_key))
-
-for i in range(1, 10):
-    key_name = f"GROQ_API_KEY{i}"
-    key_value = os.getenv(key_name)
-    if key_value:
-        GROQ_API_KEYS.append((key_name, key_value))
-
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_API_KEYS = groq_dynamic.load_groq_keys()
 
 if not GROQ_API_KEYS:
     raise SystemExit(
@@ -93,91 +81,17 @@ def parse_retry_after_seconds(resp: requests.Response) -> float:
 
 
 def groq_chat(messages, max_tokens=1200, temperature=0, timeout=90, max_retries=8, json_mode=True):
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
-
-    backoff = 1.0
-
-    for attempt in range(1, max_retries + 1):
-        rate_limit_waits = []
-        network_errors = []
-
-        for key_name, api_key in GROQ_API_KEYS:
-            try:
-                resp = requests.post(
-                    GROQ_API_URL,
-                    headers=make_groq_headers(api_key),
-                    json=payload,
-                    timeout=timeout,
-                )
-            except requests.RequestException as e:
-                network_errors.append((key_name, e))
-                print(
-                    f"[NET] {key_name} network error. "
-                    f"Trying next key if available. Attempt {attempt}/{max_retries}"
-                )
-                continue
-
-            if resp.status_code == 200:
-                return resp.json()
-
-            if resp.status_code == 429:
-                wait_s = max(parse_retry_after_seconds(resp), backoff) + 0.25
-                rate_limit_waits.append(wait_s)
-                print(
-                    f"[429] {key_name} rate limited. "
-                    f"Trying next key before sleeping. Attempt {attempt}/{max_retries}"
-                )
-                continue
-
-            if resp.status_code == 400:
-                try:
-                    err = resp.json()
-                except Exception:
-                    err = {}
-
-                code = err.get("error", {}).get("code", "")
-                if code == "json_validate_failed" and json_mode:
-                    print("[400] JSON validation failed. Retrying without JSON mode...")
-                    return groq_chat(
-                        messages=messages,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        timeout=timeout,
-                        max_retries=max_retries,
-                        json_mode=False,
-                    )
-
-            raise SystemExit(f"Groq API error using {key_name}: {resp.status_code} {resp.text}")
-
-        if rate_limit_waits:
-            wait_s = max(rate_limit_waits)
-        else:
-            wait_s = backoff + 0.25
-
-        if attempt == max_retries:
-            if network_errors and not rate_limit_waits:
-                key_name, err = network_errors[-1]
-                raise SystemExit(f"Network error calling Groq using {key_name}: {err}")
-            raise SystemExit("Groq API error: too many retries across all API keys.")
-
-        print(
-            f"All Groq API keys failed or were rate limited. "
-            f"Sleeping {wait_s:.2f}s, then retrying from GROQ_API_KEY. "
-            f"Attempt {attempt}/{max_retries}"
+    try:
+        return groq_dynamic.groq_chat_try_all_models(
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+            max_retry_rounds=max_retries,
+            json_mode=json_mode,
         )
-
-        time.sleep(wait_s)
-        backoff = min(backoff * 1.6, 20.0)
-
-    raise SystemExit("Groq API error: too many retries across all API keys.")
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
 
 def extract_json_object(text: str):
     t = text.strip()

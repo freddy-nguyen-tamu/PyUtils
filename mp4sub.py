@@ -9,15 +9,16 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
 import requests
+import groq_dynamic
 
 # ----------------------------
 # CONFIG
 # ----------------------------
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_API_KEYS = groq_dynamic.load_groq_keys()
 GROQ_BASE_URL = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 
-# Groq Whisper model
-DEFAULT_MODEL = os.environ.get("GROQ_TRANSCRIBE_MODEL", "whisper-large-v3")
+# Use "auto" to discover the current Groq Whisper model list dynamically.
+DEFAULT_MODEL = os.environ.get("GROQ_TRANSCRIBE_MODEL", "auto")
 
 # Chunking controls
 CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "60"))  # 60s chunks
@@ -124,7 +125,7 @@ def sec_to_srt_time(t: float) -> str:
 def groq_transcribe_verbose_json(
     audio_path: Path,
     context_prompt: str,
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = DEFAULT_MODEL,
     language: Optional[str] = None,
     temperature: float = 0.0,
 ) -> Dict[str, Any]:
@@ -132,28 +133,75 @@ def groq_transcribe_verbose_json(
     Call Groq OpenAI-compatible transcription endpoint.
     Requests verbose_json to get per-segment timestamps.
     """
-    if not GROQ_API_KEY:
+    if not GROQ_API_KEYS:
         raise EnvironmentError("GROQ_API_KEY env var not set.")
 
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    model_override = (model or "").strip()
+    if model_override and model_override.lower() not in {"auto", "dynamic"}:
+        models = [model_override]
+    else:
+        models = groq_dynamic.groq_transcription_model_candidates(GROQ_API_KEYS)
 
-    data = {
-        "model": model,
-        "prompt": context_prompt,
-        "response_format": "verbose_json",  # critical for segments
-        "temperature": str(temperature),
-    }
-    if language:
-        data["language"] = language
+    disabled_keys = set()
+    last_error = "unknown Groq transcription error"
+    backoff = 1.0
 
-    with open(audio_path, "rb") as f:
-        files = {"file": (audio_path.name, f, "audio/wav")}
-        r = requests.post(TRANSCRIBE_URL, headers=headers, data=data, files=files, timeout=300)
+    for round_number in range(1, 4):
+        waits: List[float] = []
 
-    if r.status_code != 200:
-        raise RuntimeError(f"Groq transcription failed ({r.status_code}): {r.text}")
+        for model_id in models:
+            for key_name, api_key in GROQ_API_KEYS:
+                if key_name in disabled_keys:
+                    continue
 
-    return r.json()
+                headers = {"Authorization": f"Bearer {api_key}"}
+                data = {
+                    "model": model_id,
+                    "prompt": context_prompt,
+                    "response_format": "verbose_json",
+                    "temperature": str(temperature),
+                }
+                if language:
+                    data["language"] = language
+
+                with open(audio_path, "rb") as f:
+                    files = {"file": (audio_path.name, f, "audio/wav")}
+                    r = requests.post(
+                        TRANSCRIBE_URL,
+                        headers=headers,
+                        data=data,
+                        files=files,
+                        timeout=300,
+                    )
+
+                if r.status_code == 200:
+                    groq_dynamic.save_successful_transcription_model(model_id)
+                    return r.json()
+
+                last_error = f"{key_name} {model_id} HTTP {r.status_code}: {r.text[:500]}"
+
+                if r.status_code in (401, 403):
+                    disabled_keys.add(key_name)
+                    continue
+
+                if r.status_code == 429:
+                    waits.append(max(groq_dynamic.parse_retry_after_seconds(r, backoff), backoff))
+                    continue
+
+                if r.status_code in (408, 409, 500, 502, 503, 504):
+                    waits.append(max(groq_dynamic.parse_retry_after_seconds(r, backoff), backoff))
+                    continue
+
+        if round_number < 3:
+            wait_s = max(waits) if waits else backoff
+            print(
+                "All Groq transcription key/model combinations failed. "
+                f"Sleeping {wait_s:.2f}s before retry round {round_number}/3."
+            )
+            time.sleep(wait_s)
+            backoff = min(backoff * 1.7, 30.0)
+
+    raise RuntimeError(f"Groq transcription failed: {last_error}")
 
 
 def segments_from_verbose_json(resp: Dict[str, Any]) -> List[Dict[str, Any]]:
