@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlgoMonster Flowchart — Scrollable Version</title>
+<style>
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f8fafc;
+    color: #0f172a;
+  }
+  .toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 10000;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 10px 14px;
+    background: rgba(15, 23, 42, 0.95);
+    color: #f8fafc;
+    box-shadow: 0 4px 18px rgba(15,23,42,.18);
+    backdrop-filter: blur(8px);
+  }
+  .toolbar strong { font-size: 15px; }
+  .toolbar .hint {
+    font-size: 13px;
+    color: #cbd5e1;
+    margin-right: auto;
+  }
+  .toolbar label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+  }
+  .toolbar input[type="search"] {
+    width: min(300px, 50vw);
+    border: 1px solid #475569;
+    background: #0f172a;
+    color: #f8fafc;
+    border-radius: 8px;
+    padding: 7px 10px;
+    outline: none;
+  }
+  .toolbar button {
+    border: 1px solid #475569;
+    background: #1e293b;
+    color: #f8fafc;
+    border-radius: 8px;
+    padding: 7px 10px;
+    cursor: pointer;
+  }
+  .toolbar button:hover { background: #334155; }
+  .viewport {
+    width: 100%;
+    overflow: visible;
+  }
+  .scaled-wrap {
+    position: relative;
+    width: 100%;
+    overflow: hidden;
+  }
+  .chart {
+    position: relative;
+    width: 1712px;
+    height: 15500px;
+    transform-origin: top left;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(148,163,184,.22) 1px, transparent 1.2px);
+    background-size: 24px 24px;
+  }
+  .edges {
+    position: absolute;
+    inset: 0;
+    width: 1712px;
+    height: 15500px;
+    overflow: visible;
+    pointer-events: none;
+  }
+  .edge-path {
+    fill: none;
+    stroke: rgba(100, 116, 139, 0.56);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+  }
+  .node {
+    position: absolute;
+    z-index: 4;
+  }
+  .node-diamond {
+    width: 216px;
+    height: 216px;
+  }
+  .diamond-shape {
+    width: 216px;
+    height: 216px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transform: rotate(45deg);
+    border-radius: 18px;
+    background: #f59e0b;
+    border: 1px solid rgba(15, 23, 42, 0.18);
+    box-shadow: 0 14px 32px rgba(15, 23, 42, 0.18);
+  }
+  .diamond-text {
+    width: 78%;
+    transform: rotate(-45deg);
+    text-align: center;
+    overflow-wrap: break-word;
+    color: #111827;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+  }
+  .node-leaf {
+    width: 252px;
+  }
+  .leaf-shape {
+    width: 252px;
+    min-height: 68px;
+    padding: 18px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 14px;
+    background: #6366f1;
+    color: #eef2ff;
+    border: 1px solid rgba(15, 23, 42, 0.16);
+    box-shadow: 0 14px 32px rgba(15, 23, 42, 0.18);
+    text-align: center;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.3;
+    letter-spacing: -0.015em;
+  }
+  .edge-label {
+    position: absolute;
+    z-index: 5;
+    transform: translate(-50%, -50%);
+    padding: 6px 10px;
+    border-radius: 999px;
+    color: #f8fafc;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: .01em;
+    box-shadow: 0 8px 20px rgba(15,23,42,.18);
+  }
+  .edge-label.yes {
+    background: rgba(22,163,74,.94);
+    border: 1px solid rgba(187,247,208,.6);
+  }
+  .edge-label.no {
+    background: rgba(220,38,38,.94);
+    border: 1px solid rgba(254,202,202,.6);
+  }
+  .node.match .diamond-shape,
+  .node.match .leaf-shape {
+    outline: 6px solid rgba(14,165,233,.5);
+    outline-offset: 5px;
+  }
+  .legend {
+    position: absolute;
+    left: 26px;
+    top: 10px;
+    z-index: 6;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(255,255,255,.92);
+    color: #475569;
+    border: 1px solid #e2e8f0;
+    font-size: 13px;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background:#020617; color:#e2e8f0; }
+    .chart {
+      background-color:#020617;
+      background-image: radial-gradient(circle at 1px 1px, rgba(100,116,139,.22) 1px, transparent 1.2px);
+    }
+    .edge-path { stroke: rgba(148,163,184,.46); }
+    .legend { background:rgba(15,23,42,.92); color:#cbd5e1; border-color:#334155; }
+  }
+  @media print {
+    .toolbar { display:none; }
+    .scaled-wrap { overflow:visible !important; height:auto !important; }
+    .chart { transform:none !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <strong>AlgoMonster Flowchart — scrollable</strong>
+    <span class="hint">Use your mouse wheel / trackpad normally. No click-drag panning.</span>
+    <label><input id="fitToggle" type="checkbox" checked> Fit width</label>
+    <input id="searchBox" type="search" placeholder="Find a node… e.g. binary search">
+    <button id="findBtn" type="button">Find</button>
+    <button id="topBtn" type="button">Top</button>
+  </div>
+
+  <div class="viewport">
+    <div id="scaledWrap" class="scaled-wrap">
+      <div id="chart" class="chart">
+        <div class="legend">Orange diamond = question · Purple box = algorithm/result</div>
+        <svg class="edges" viewBox="0 0 1712 15500" aria-hidden="true">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="rgba(100,116,139,.72)"></path>
+            </marker>
+          </defs>
+          <path class="edge-path" d="M228.00002569901315,9510.000102796053 C228.00002569901315,9603.541435513274 648.0000256990131,9192.459258360082 648.0000256990131,9286.000591077303" marker-end="url(#arrow)" aria-label="Edge from max/min to max/min-binarysearch-hint"></path><path class="edge-path" d="M648.0000256990131,9510.000102796053 C648.0000256990131,9603.541435513274 1066,9192.459258360082 1066,9286.000591077303" marker-end="url(#arrow)" aria-label="Edge from max/min-binarysearch-hint to max/min-binarysearch"></path><path class="edge-path" d="M648.0000256990131,9510.000102796053 C648.0000256990131,9593.000025699013 648.0000256990131,9593.000025699013 648.0000256990131,9675.999948601973" marker-end="url(#arrow)" aria-label="Edge from max/min-binarysearch-hint to max/min-structure"></path><path class="edge-path" d="M648.0000256990131,9900.000102796053 C648.0000256990131,9993.541569660789 1077.1562628495067,9582.458481737238 1077.1562628495067,9675.999948601973" marker-end="url(#arrow)" aria-label="Edge from max/min-structure to max/min-monotonic-stack"></path><path class="edge-path" d="M648.0000256990131,9900.000102796053 C648.0000256990131,9983.000346936678 648.0000256990131,9983.000346936678 648.0000256990131,10066.000591077303" marker-end="url(#arrow)" aria-label="Edge from max/min-structure to max/min-subproblem"></path><path class="edge-path" d="M648.0000256990131,10290.000102796053 C648.0000256990131,10383.541435513274 1085.999935752467,9972.459258360082 1085.999935752467,10066.000591077303" marker-end="url(#arrow)" aria-label="Edge from max/min-subproblem to max/min-dp"></path><path class="edge-path" d="M648.0000256990131,10290.000102796053 C648.0000256990131,10373.000025699013 648.0000256990131,10373.000025699013 648.0000256990131,10455.999948601973" marker-end="url(#arrow)" aria-label="Edge from max/min-subproblem to max/min-greedyhuh"></path><path class="edge-path" d="M228.00002569901315,9510.000102796053 C228.00002569901315,10178.000025699013 228.00002569901315,10178.000025699013 228.00002569901315,10845.999948601973" marker-end="url(#arrow)" aria-label="Edge from max/min to counting"></path><path class="edge-path" d="M228.00002569901315,11690.000102796053 C228.00002569901315,11968.000025699013 228.00002569901315,11968.000025699013 228.00002569901315,12245.999948601973" marker-end="url(#arrow)" aria-label="Edge from sequence-count to find-indices"></path><path class="edge-path" d="M228.00002569901315,11690.000102796053 C228.00002569901315,11783.541569660789 648.0000256990131,11372.458481737238 648.0000256990131,11465.999948601973" marker-end="url(#arrow)" aria-label="Edge from sequence-count to sequence-count-monotonic"></path><path class="edge-path" d="M648.0000256990131,11690.000102796053 C648.0000256990131,11783.541569660789 1066,11372.458481737238 1066,11465.999948601973" marker-end="url(#arrow)" aria-label="Edge from sequence-count-monotonic to sequence-count-twopointers"></path><path class="edge-path" d="M648.0000256990131,11690.000102796053 C648.0000256990131,11773.000025699013 648.0000256990131,11773.000025699013 648.0000256990131,11855.999948601973" marker-end="url(#arrow)" aria-label="Edge from sequence-count-monotonic to sequence-count-subproblems"></path><path class="edge-path" d="M648.0000256990131,12080.000102796053 C648.0000256990131,12173.541569660789 1085.999935752467,11762.458481737238 1085.999935752467,11855.999948601973" marker-end="url(#arrow)" aria-label="Edge from sequence-count-subproblems to sequence-count-dp"></path><path class="edge-path" d="M228.00002569901315,12470.000102796053 C228.00002569901315,12563.541569660789 648.0000256990131,12152.458481737238 648.0000256990131,12245.999948601973" marker-end="url(#arrow)" aria-label="Edge from find-indices to find-indices-monotonic"></path><path class="edge-path" d="M648.0000256990131,12470.000102796053 C648.0000256990131,12563.541569660789 1066,12152.458481737238 1066,12245.999948601973" marker-end="url(#arrow)" aria-label="Edge from find-indices-monotonic to find-indices-twopointers"></path><path class="edge-path" d="M228.00002569901315,12470.000102796053 C228.00002569901315,12553.000668174343 228.00002569901315,12553.000668174343 228.00002569901315,12636.001233552632" marker-end="url(#arrow)" aria-label="Edge from find-indices to constant-memory"></path><path class="edge-path" d="M228.00002569901315,8500.000102796053 C228.00002569901315,8593.541569660789 648.0000256990131,8182.458481737239 648.0000256990131,8275.999948601973" marker-end="url(#arrow)" aria-label="Edge from subarrays to subarrays-window"></path><path class="edge-path" d="M228.00002569901315,8110.0001027960525 C228.00002569901315,8203.541435513273 646,7792.4592583600825 646,7886.0005910773025" marker-end="url(#arrow)" aria-label="Edge from sums to subarrays-prefixsums"></path><path class="edge-path" d="M648.0000256990131,8500.000102796053 C648.0000256990131,8593.541569660789 1069.447843852796,8182.458481737239 1069.447843852796,8275.999948601973" marker-end="url(#arrow)" aria-label="Edge from subarrays-window to subarrays-twopointers"></path><path class="edge-path" d="M648.0000256990131,8500.000102796053 C648.0000256990131,8583.000346936678 648.0000256990131,8583.000346936678 648.0000256990131,8666.000591077303" marker-end="url(#arrow)" aria-label="Edge from subarrays-window to subarrays-structure"></path><path class="edge-path" d="M648.0000256990131,8890.000102796053 C648.0000256990131,8983.541435513274 1077.1562628495067,8572.459258360082 1077.1562628495067,8666.000591077303" marker-end="url(#arrow)" aria-label="Edge from subarrays-structure to subarrays-monotonic-stack"></path><path class="edge-path" d="M648.0000256990131,8890.000102796053 C648.0000256990131,8973.000025699013 1085.999935752467,8973.000025699013 1085.999935752467,9055.999948601973" marker-end="url(#arrow)" aria-label="Edge from subarrays-structure to subarrays-dp"></path><path class="edge-path" d="M228.00002569901315,8110.0001027960525 C228.00002569901315,8193.000025699013 228.00002569901315,8193.000025699013 228.00002569901315,8275.999948601973" marker-end="url(#arrow)" aria-label="Edge from sums to subarrays"></path><path class="edge-path" d="M228.00002569901315,8500.000102796053 C228.00002569901315,8893.000346936678 228.00002569901315,8893.000346936678 228.00002569901315,9286.000591077303" marker-end="url(#arrow)" aria-label="Edge from subarrays to max/min"></path><path class="edge-path" d="M228.00002569901315,12860.000102796053 C228.00002569901315,12953.541301365567 648.0000256990131,12542.460034983118 648.0000256990131,12636.001233552632" marker-end="url(#arrow)" aria-label="Edge from constant-memory to constant-memory-monotonic"></path><path class="edge-path" d="M648.0000256990131,12860.000102796053 C648.0000256990131,12953.541301365567 1066,12542.460034983118 1066,12636.001233552632" marker-end="url(#arrow)" aria-label="Edge from constant-memory-monotonic to constant-memory-twopointers"></path><path class="edge-path" d="M648.0000256990131,10680.000102796053 C648.0000256990131,10773.541569660789 1085.999935752467,10362.458481737238 1085.999935752467,10455.999948601973" marker-end="url(#arrow)" aria-label="Edge from max/min-greedyhuh to max/min-greedy"></path><path class="edge-path" d="M228.00002569901315,11070.000102796053 C228.00002569901315,11163.541569660789 648.0000256990131,10752.458481737238 648.0000256990131,10845.999948601973" marker-end="url(#arrow)" aria-label="Edge from counting to counting-efficiency"></path><path class="edge-path" d="M648.0000256990131,11070.000102796053 C648.0000256990131,11163.541569660789 1085.999935752467,10752.458481737238 1085.999935752467,10845.999948601973" marker-end="url(#arrow)" aria-label="Edge from counting-efficiency to counting-bruteforce/backtracking"></path><path class="edge-path" d="M648.0000256990131,11070.000102796053 C648.0000256990131,11153.000668174343 1085.999935752467,11153.000668174343 1085.999935752467,11236.001233552632" marker-end="url(#arrow)" aria-label="Edge from counting-efficiency to counting-dp"></path><path class="edge-path" d="M228.00002569901315,11070.000102796053 C228.00002569901315,11268.000025699013 228.00002569901315,11268.000025699013 228.00002569901315,11465.999948601973" marker-end="url(#arrow)" aria-label="Edge from counting to sequence-count"></path><path class="edge-path" d="M228.00002569901315,4300.0001027960525 C228.00002569901315,4393.541502587053 648.0000256990131,3982.458870048637 648.0000256990131,4076.0002698396383" marker-end="url(#arrow)" aria-label="Edge from linked-list to linked-list-pointer-pattern"></path><path class="edge-path" d="M228.00002569901315,4300.0001027960525 C228.00002569901315,4693.000025699013 228.00002569901315,4693.000025699013 228.00002569901315,5085.999948601973" marker-end="url(#arrow)" aria-label="Edge from linked-list to hash-table"></path><path class="edge-path" d="M648.0000256990131,4300.0001027960525 C648.0000256990131,4393.541502587053 1066,3982.458870048637 1066,4076.0002698396383" marker-end="url(#arrow)" aria-label="Edge from linked-list-pointer-pattern to linked-list-twopointers"></path><path class="edge-path" d="M648.0000256990131,4300.0001027960525 C648.0000256990131,4383.000025699013 648.0000256990131,4383.000025699013 648.0000256990131,4465.999948601973" marker-end="url(#arrow)" aria-label="Edge from linked-list-pointer-pattern to linked-list-multi-merge"></path><path class="edge-path" d="M648.0000256990131,4690.0001027960525 C648.0000256990131,4783.541569660787 1085.999935752467,4372.458481737239 1085.999935752467,4465.999948601973" marker-end="url(#arrow)" aria-label="Edge from linked-list-multi-merge to linked-list-heap"></path><path class="edge-path" d="M648.0000256990131,4690.0001027960525 C648.0000256990131,4773.000025699013 1085.999935752467,4773.000025699013 1085.999935752467,4855.999948601973" marker-end="url(#arrow)" aria-label="Edge from linked-list-multi-merge to linked-list-manipulation"></path><path class="edge-path" d="M228.00002569901315,3909.9994603207238 C228.00002569901315,4003.540793037944 649.0729594983552,3592.4586158847537 649.0729594983552,3685.9999486019738" marker-end="url(#arrow)" aria-label="Edge from kth-smallest to kth-smallest-heap"></path><path class="edge-path" d="M228.00002569901315,3909.9994603207238 C228.00002569901315,3992.999865080181 228.00002569901315,3992.999865080181 228.00002569901315,4076.0002698396383" marker-end="url(#arrow)" aria-label="Edge from kth-smallest to linked-list"></path><path class="edge-path" d="M228.00002569901315,3290.0001027960525 C228.00002569901315,3383.541569660787 648.0000256990131,2972.4584817372393 648.0000256990131,3065.9999486019738" marker-end="url(#arrow)" aria-label="Edge from sorted-search to range-query"></path><path class="edge-path" d="M648.0000256990131,3290.0001027960525 C648.0000256990131,3383.541569660787 1085.999935752467,2972.4584817372393 1085.999935752467,3065.9999486019738" marker-end="url(#arrow)" aria-label="Edge from range-query to range-query-leaf"></path><path class="edge-path" d="M648.0000256990131,3290.0001027960525 C648.0000256990131,3373.0000256990133 1066,3373.0000256990133 1066,3455.9999486019738" marker-end="url(#arrow)" aria-label="Edge from range-query to sorted-search-binarysearch"></path><path class="edge-path" d="M228.00002569901315,3290.0001027960525 C228.00002569901315,3488.0000256990133 228.00002569901315,3488.0000256990133 228.00002569901315,3685.9999486019738" marker-end="url(#arrow)" aria-label="Edge from sorted-search to kth-smallest"></path><path class="edge-path" d="M228.00002569901315,7100.0001027960525 C228.00002569901315,7193.541569660787 648.0000256990131,6782.458481737239 648.0000256990131,6875.999948601973" marker-end="url(#arrow)" aria-label="Edge from small-constraints to small-constraints-efficiency"></path><path class="edge-path" d="M648.0000256990131,7100.0001027960525 C648.0000256990131,7193.541569660787 1085.999935752467,6782.458481737239 1085.999935752467,6875.999948601973" marker-end="url(#arrow)" aria-label="Edge from small-constraints-efficiency to small-constraints-bruteforce/backtracking"></path><path class="edge-path" d="M648.0000256990131,7100.0001027960525 C648.0000256990131,7183.0003469366775 648.0000256990131,7183.0003469366775 648.0000256990131,7266.0005910773025" marker-end="url(#arrow)" aria-label="Edge from small-constraints-efficiency to bitmask-state"></path><path class="edge-path" d="M648.0000256990131,7490.0001027960525 C648.0000256990131,7583.5414355132725 1066,7172.4592583600825 1066,7266.0005910773025" marker-end="url(#arrow)" aria-label="Edge from bitmask-state to bitmask-dp"></path><path class="edge-path" d="M648.0000256990131,7490.0001027960525 C648.0000256990131,7573.000025699013 1085.999935752467,7573.000025699013 1085.999935752467,7655.999948601973" marker-end="url(#arrow)" aria-label="Edge from bitmask-state to small-constraints-dp"></path><path class="edge-path" d="M228.00002569901315,7100.0001027960525 C228.00002569901315,7493.0003469366775 228.00002569901315,7493.0003469366775 228.00002569901315,7886.0005910773025" marker-end="url(#arrow)" aria-label="Edge from small-constraints to sums"></path><path class="edge-path" d="M228.00002569901315,259.99998233192844 C228.00002569901315,353.5414156598023 648.0000256990131,-57.54144457119213 648.0000256990131,35.999988756681745" marker-end="url(#arrow)" aria-label="Edge from graph to tree"></path><path class="edge-path" d="M228.00002569901315,259.99998233192844 C228.00002569901315,1662.999965466951 228.00002569901315,1662.9999654669512 228.00002569901315,3065.9999486019738" marker-end="url(#arrow)" aria-label="Edge from graph to sorted-search"></path><path class="edge-path" d="M648.0000256990131,259.99998233192844 C648.0000256990131,353.5414156598023 1067.9998650801808,-57.54144457119213 1067.9998650801808,35.999988756681745" marker-end="url(#arrow)" aria-label="Edge from tree to tree-level-order"></path><path class="edge-path" d="M1067.9998650801808,259.99998233192844 C1067.9998650801808,353.5414156598023 1486,-57.54144457119213 1486,35.999988756681745" marker-end="url(#arrow)" aria-label="Edge from tree-level-order to tree-bfs"></path><path class="edge-path" d="M1067.9998650801808,259.99998233192844 C1067.9998650801808,343.0000256990131 1067.9998650801808,343.0000256990131 1067.9998650801808,426.00006906609786" marker-end="url(#arrow)" aria-label="Edge from tree-level-order to tree-build"></path><path class="edge-path" d="M1067.9998650801808,650.0000626413446 C1067.9998650801808,743.5414959692184 1506.0000963712994,332.45863573822396 1506.0000963712994,426.00006906609786" marker-end="url(#arrow)" aria-label="Edge from tree-build to tree-build-dc"></path><path class="edge-path" d="M1067.9998650801808,650.0000626413446 C1067.9998650801808,733.000005621659 1486,733.000005621659 1486,815.9999486019736" marker-end="url(#arrow)" aria-label="Edge from tree-build to tree-dfs"></path><path class="edge-path" d="M648.0000256990131,259.99998233192844 C648.0000256990131,652.9999654669512 648.0000256990131,652.9999654669512 648.0000256990131,1045.9999486019738" marker-end="url(#arrow)" aria-label="Edge from tree to directed-graph"></path><path class="edge-path" d="M648.0000256990131,1270.0000224866365 C648.0000256990131,1363.541472582942 1073.8332198293585,952.4584985056681 1073.8332198293585,1045.9999486019738" marker-end="url(#arrow)" aria-label="Edge from directed-graph to directed-graph-topo"></path><path class="edge-path" d="M648.0000256990131,1270.0000224866365 C648.0000256990131,1353.000065853721 648.0000256990131,1353.000065853721 648.0000256990131,1436.0001092208058" marker-end="url(#arrow)" aria-label="Edge from directed-graph to shortest-path"></path><path class="edge-path" d="M648.0000256990131,1660.0001027960527 C648.0000256990131,1753.5415361239266 1067.9998650801808,1342.458675892932 1067.9998650801808,1436.0001092208058" marker-end="url(#arrow)" aria-label="Edge from shortest-path to shortest-path-weighted"></path><path class="edge-path" d="M648.0000256990131,1660.0001027960527 C648.0000256990131,1858.0001863178454 648.0000256990131,1858.0001863178454 648.0000256990131,2056.0002698396383" marker-end="url(#arrow)" aria-label="Edge from shortest-path to connectivity"></path><path class="edge-path" d="M1067.9998650801808,1660.0001027960527 C1067.9998650801808,1753.5415361239266 1506.0000963712994,1342.458675892932 1506.0000963712994,1436.0001092208058" marker-end="url(#arrow)" aria-label="Edge from shortest-path-weighted to shortest-path-dijkstra"></path><path class="edge-path" d="M1067.9998650801808,1660.0001027960527 C1067.9998650801808,1743.0000256990133 1486,1743.0000256990133 1486,1825.9999486019738" marker-end="url(#arrow)" aria-label="Edge from shortest-path-weighted to shortest-path-bfs"></path><path class="edge-path" d="M648.0000256990131,2280.0001027960525 C648.0000256990131,2373.541502587054 1081.7395212273848,1962.4588700486372 1081.7395212273848,2056.0002698396383" marker-end="url(#arrow)" aria-label="Edge from connectivity to connectivity-dsu"></path><path class="edge-path" d="M648.0000256990131,2280.0001027960525 C648.0000256990131,2363.0000256990133 648.0000256990131,2363.0000256990133 648.0000256990131,2445.9999486019738" marker-end="url(#arrow)" aria-label="Edge from connectivity to graph-smallcontraints"></path><path class="edge-path" d="M648.0000256990131,2669.9997815583883 C648.0000256990131,2763.5411813493897 1083.3853824013158,2352.4585488109724 1083.3853824013158,2445.9999486019738" marker-end="url(#arrow)" aria-label="Edge from graph-smallcontraints to graph-smallcontraints-dfs"></path><path class="edge-path" d="M648.0000256990131,2669.9997815583883 C648.0000256990131,2753.0000256990133 1066,2753.0000256990133 1066,2836.0002698396383" marker-end="url(#arrow)" aria-label="Edge from graph-smallcontraints to graph-smallcontraints-bfs"></path><path class="edge-path" d="M228.00002569901315,5309.999460320723 C228.00002569901315,5403.540793037943 666.0000160618832,4992.458615884753 666.0000160618832,5085.999948601973" marker-end="url(#arrow)" aria-label="Edge from hash-table to hash-table-leaf"></path><path class="edge-path" d="M228.00002569901315,5309.999460320723 C228.00002569901315,5392.999704461348 228.00002569901315,5392.999704461348 228.00002569901315,5475.999948601973" marker-end="url(#arrow)" aria-label="Edge from hash-table to intervals"></path><path class="edge-path" d="M228.00002569901315,5700.0001027960525 C228.00002569901315,5793.541569660787 666.0000160618832,5382.458481737239 666.0000160618832,5475.999948601973" marker-end="url(#arrow)" aria-label="Edge from intervals to intervals-leaf"></path><path class="edge-path" d="M228.00002569901315,5700.0001027960525 C228.00002569901315,5783.000025699013 228.00002569901315,5783.000025699013 228.00002569901315,5865.999948601973" marker-end="url(#arrow)" aria-label="Edge from intervals to partition-array"></path><path class="edge-path" d="M228.00002569901315,6090.0001027960525 C228.00002569901315,6183.541569660787 666.0000160618832,5772.458481737239 666.0000160618832,5865.999948601973" marker-end="url(#arrow)" aria-label="Edge from partition-array to partition-array-leaf"></path><path class="edge-path" d="M228.00002569901315,6090.0001027960525 C228.00002569901315,6173.000025699013 228.00002569901315,6173.000025699013 228.00002569901315,6255.999948601973" marker-end="url(#arrow)" aria-label="Edge from partition-array to string-segmentation"></path><path class="edge-path" d="M228.00002569901315,6480.0001027960525 C228.00002569901315,6573.541569660787 648.0000256990131,6162.458481737239 648.0000256990131,6255.999948601973" marker-end="url(#arrow)" aria-label="Edge from string-segmentation to string-pattern"></path><path class="edge-path" d="M648.0000256990131,6480.0001027960525 C648.0000256990131,6573.541569660787 1085.999935752467,6162.458481737239 1085.999935752467,6255.999948601973" marker-end="url(#arrow)" aria-label="Edge from string-pattern to string-pattern-leaf"></path><path class="edge-path" d="M648.0000256990131,6480.0001027960525 C648.0000256990131,6563.000025699013 1085.999935752467,6563.000025699013 1085.999935752467,6645.999948601973" marker-end="url(#arrow)" aria-label="Edge from string-pattern to string-segmentation-leaf"></path><path class="edge-path" d="M228.00002569901315,6480.0001027960525 C228.00002569901315,6678.000025699013 228.00002569901315,6678.000025699013 228.00002569901315,6875.999948601973" marker-end="url(#arrow)" aria-label="Edge from string-segmentation to small-constraints"></path><path class="edge-path" d="M228.00002569901315,12860.000102796053 C228.00002569901315,12943.000025699013 228.00002569901315,12943.000025699013 228.00002569901315,13025.999948601973" marker-end="url(#arrow)" aria-label="Edge from constant-memory to parse-symbols"></path><path class="edge-path" d="M228.00002569901315,13250.000102796053 C228.00002569901315,13343.541569660789 648.0000256990131,12932.458481737238 648.0000256990131,13025.999948601973" marker-end="url(#arrow)" aria-label="Edge from parse-symbols to parse-symbols-optimize"></path><path class="edge-path" d="M648.0000256990131,13250.000102796053 C648.0000256990131,13343.541569660789 1085.999935752467,12932.458481737238 1085.999935752467,13025.999948601973" marker-end="url(#arrow)" aria-label="Edge from parse-symbols-optimize to parse-symbols-dp"></path><path class="edge-path" d="M648.0000256990131,13250.000102796053 C648.0000256990131,13333.000025699013 1066,13333.000025699013 1066,13415.999948601973" marker-end="url(#arrow)" aria-label="Edge from parse-symbols-optimize to parse-symbols-stack"></path><path class="edge-path" d="M228.00002569901315,13250.000102796053 C228.00002569901315,13448.000025699013 228.00002569901315,13448.000025699013 228.00002569901315,13645.999948601973" marker-end="url(#arrow)" aria-label="Edge from parse-symbols to design-check"></path><path class="edge-path" d="M228.00002569901315,13870.000102796053 C228.00002569901315,13963.541569660789 666.0000160618832,13552.458481737238 666.0000160618832,13645.999948601973" marker-end="url(#arrow)" aria-label="Edge from design-check to design-leaf"></path><path class="edge-path" d="M228.00002569901315,13870.000102796053 C228.00002569901315,13953.000668174343 228.00002569901315,13953.000668174343 228.00002569901315,14036.001233552632" marker-end="url(#arrow)" aria-label="Edge from design-check to simulation-check"></path><path class="edge-path" d="M228.00002569901315,14260.000102796053 C228.00002569901315,14353.541301365567 666.0000160618832,13942.460034983118 666.0000160618832,14036.001233552632" marker-end="url(#arrow)" aria-label="Edge from simulation-check to simulation-leaf"></path><path class="edge-path" d="M228.00002569901315,14260.000102796053 C228.00002569901315,14343.000668174343 228.00002569901315,14343.000668174343 228.00002569901315,14426.001233552632" marker-end="url(#arrow)" aria-label="Edge from simulation-check to math-bit-check"></path><path class="edge-path" d="M228.00002569901315,14650.000102796053 C228.00002569901315,14743.541301365567 648.0000256990131,14332.460034983118 648.0000256990131,14426.001233552632" marker-end="url(#arrow)" aria-label="Edge from math-bit-check to number-theory"></path><path class="edge-path" d="M648.0000256990131,14650.000102796053 C648.0000256990131,14743.541301365567 1070.2186536287006,14332.460034983118 1070.2186536287006,14426.001233552632" marker-end="url(#arrow)" aria-label="Edge from number-theory to number-theory-leaf"></path><path class="edge-path" d="M648.0000256990131,14650.000102796053 C648.0000256990131,14733.000668174343 1085.999935752467,14733.000668174343 1085.999935752467,14816.001233552632" marker-end="url(#arrow)" aria-label="Edge from number-theory to math-bit-leaf"></path><path class="edge-path" d="M228.00002569901315,14650.000102796053 C228.00002569901315,14848.000025699013 666.0000160618832,14848.000025699013 666.0000160618832,15045.999948601973" marker-end="url(#arrow)" aria-label="Edge from math-bit-check to specialized-leaf"></path>
+        </svg>
+        <div class="edge-label yes" style="left:438.000px;top:9398.000px">yes</div><div class="edge-label yes" style="left:857.000px;top:9398.000px">yes</div><div class="edge-label no" style="left:648.000px;top:9593.000px">no</div><div class="edge-label yes" style="left:862.578px;top:9788.000px">yes</div><div class="edge-label no" style="left:648.000px;top:9983.000px">no</div><div class="edge-label yes" style="left:867.000px;top:10178.000px">yes</div><div class="edge-label no" style="left:648.000px;top:10373.000px">no</div><div class="edge-label no" style="left:228.000px;top:10178.000px">no</div><div class="edge-label no" style="left:228.000px;top:11968.000px">no</div><div class="edge-label yes" style="left:438.000px;top:11578.000px">yes</div><div class="edge-label yes" style="left:857.000px;top:11578.000px">yes</div><div class="edge-label no" style="left:648.000px;top:11773.000px">no</div><div class="edge-label yes" style="left:867.000px;top:11968.000px">yes</div><div class="edge-label yes" style="left:438.000px;top:12358.000px">yes</div><div class="edge-label yes" style="left:857.000px;top:12358.000px">yes</div><div class="edge-label no" style="left:228.000px;top:12553.000px">no</div><div class="edge-label yes" style="left:438.000px;top:8388.000px">yes</div><div class="edge-label yes" style="left:437.000px;top:7998.000px">yes</div><div class="edge-label yes" style="left:858.724px;top:8388.000px">yes</div><div class="edge-label no" style="left:648.000px;top:8583.000px">no</div><div class="edge-label yes" style="left:862.578px;top:8778.000px">yes</div><div class="edge-label no" style="left:867.000px;top:8973.000px">no</div><div class="edge-label no" style="left:228.000px;top:8193.000px">no</div><div class="edge-label no" style="left:228.000px;top:8893.000px">no</div><div class="edge-label yes" style="left:438.000px;top:12748.000px">yes</div><div class="edge-label yes" style="left:857.000px;top:12748.000px">yes</div><div class="edge-label yes" style="left:867.000px;top:10568.000px">yes</div><div class="edge-label yes" style="left:438.000px;top:10958.000px">yes</div><div class="edge-label yes" style="left:867.000px;top:10958.000px">yes</div><div class="edge-label no" style="left:867.000px;top:11153.000px">no</div><div class="edge-label no" style="left:228.000px;top:11268.000px">no</div><div class="edge-label yes" style="left:438.000px;top:4188.000px">yes</div><div class="edge-label no" style="left:228.000px;top:4693.000px">no</div><div class="edge-label yes" style="left:857.000px;top:4188.000px">yes</div><div class="edge-label no" style="left:648.000px;top:4383.000px">no</div><div class="edge-label yes" style="left:867.000px;top:4578.000px">yes</div><div class="edge-label no" style="left:867.000px;top:4773.000px">no</div><div class="edge-label yes" style="left:438.536px;top:3798.000px">yes</div><div class="edge-label no" style="left:228.000px;top:3993.000px">no</div><div class="edge-label yes" style="left:438.000px;top:3178.000px">yes</div><div class="edge-label yes" style="left:867.000px;top:3178.000px">yes</div><div class="edge-label no" style="left:857.000px;top:3373.000px">no</div><div class="edge-label no" style="left:228.000px;top:3488.000px">no</div><div class="edge-label yes" style="left:438.000px;top:6988.000px">yes</div><div class="edge-label yes" style="left:867.000px;top:6988.000px">yes</div><div class="edge-label no" style="left:648.000px;top:7183.000px">no</div><div class="edge-label yes" style="left:857.000px;top:7378.000px">yes</div><div class="edge-label no" style="left:867.000px;top:7573.000px">no</div><div class="edge-label no" style="left:228.000px;top:7493.000px">no</div><div class="edge-label yes" style="left:438.000px;top:148.000px">yes</div><div class="edge-label no" style="left:228.000px;top:1663.000px">no</div><div class="edge-label yes" style="left:858.000px;top:148.000px">yes</div><div class="edge-label yes" style="left:1277.000px;top:148.000px">yes</div><div class="edge-label no" style="left:1068.000px;top:343.000px">no</div><div class="edge-label yes" style="left:1287.000px;top:538.000px">yes</div><div class="edge-label no" style="left:1277.000px;top:733.000px">no</div><div class="edge-label no" style="left:648.000px;top:653.000px">no</div><div class="edge-label yes" style="left:860.917px;top:1158.000px">yes</div><div class="edge-label no" style="left:648.000px;top:1353.000px">no</div><div class="edge-label yes" style="left:858.000px;top:1548.000px">yes</div><div class="edge-label no" style="left:648.000px;top:1858.000px">no</div><div class="edge-label yes" style="left:1287.000px;top:1548.000px">yes</div><div class="edge-label no" style="left:1277.000px;top:1743.000px">no</div><div class="edge-label yes" style="left:864.870px;top:2168.000px">yes</div><div class="edge-label no" style="left:648.000px;top:2363.000px">no</div><div class="edge-label yes" style="left:865.693px;top:2558.000px">yes</div><div class="edge-label no" style="left:857.000px;top:2753.000px">no</div><div class="edge-label yes" style="left:447.000px;top:5198.000px">yes</div><div class="edge-label no" style="left:228.000px;top:5393.000px">no</div><div class="edge-label yes" style="left:447.000px;top:5588.000px">yes</div><div class="edge-label no" style="left:228.000px;top:5783.000px">no</div><div class="edge-label yes" style="left:447.000px;top:5978.000px">yes</div><div class="edge-label no" style="left:228.000px;top:6173.000px">no</div><div class="edge-label yes" style="left:438.000px;top:6368.000px">yes</div><div class="edge-label yes" style="left:867.000px;top:6368.000px">yes</div><div class="edge-label no" style="left:867.000px;top:6563.000px">no</div><div class="edge-label no" style="left:228.000px;top:6678.000px">no</div><div class="edge-label no" style="left:228.000px;top:12943.000px">no</div><div class="edge-label yes" style="left:438.000px;top:13138.000px">yes</div><div class="edge-label yes" style="left:867.000px;top:13138.000px">yes</div><div class="edge-label no" style="left:857.000px;top:13333.000px">no</div><div class="edge-label no" style="left:228.000px;top:13448.000px">no</div><div class="edge-label yes" style="left:447.000px;top:13758.000px">yes</div><div class="edge-label no" style="left:228.000px;top:13953.000px">no</div><div class="edge-label yes" style="left:447.000px;top:14148.000px">yes</div><div class="edge-label no" style="left:228.000px;top:14343.000px">no</div><div class="edge-label yes" style="left:438.000px;top:14538.000px">yes</div><div class="edge-label yes" style="left:859.109px;top:14538.000px">yes</div><div class="edge-label no" style="left:867.000px;top:14733.000px">no</div><div class="edge-label no" style="left:447.000px;top:14848.000px">no</div>
+        
+        <div class="node node-diamond" id="node-graph" data-label="is it a graph?" style="left:120.000px;top:40.000px">
+          <div class="diamond-shape"><div class="diamond-text">Is it a graph?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-tree" data-label="is it a tree?" style="left:540.000px;top:40.000px">
+          <div class="diamond-shape"><div class="diamond-text">Is it a tree?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-tree-build" data-label="count/generate many trees?" style="left:960.000px;top:430.000px">
+          <div class="diamond-shape"><div class="diamond-text">Count/generate many trees?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-tree-build-dc" data-label="divide and conquer / tree dp" style="left:1380.000px;top:430.000px">
+          <div class="leaf-shape">Divide and Conquer / Tree DP</div>
+        </div>
+        <div class="node node-diamond" id="node-tree-level-order" data-label="level-order or shortest-level answer?" style="left:960.000px;top:40.000px">
+          <div class="diamond-shape"><div class="diamond-text">Level-order or shortest-level answer?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-tree-bfs" data-label="bfs" style="left:1380.000px;top:40.000px">
+          <div class="leaf-shape">BFS</div>
+        </div>
+        <div class="node node-leaf" id="node-tree-dfs" data-label="dfs" style="left:1380.000px;top:820.000px">
+          <div class="leaf-shape">DFS</div>
+        </div>
+        <div class="node node-diamond" id="node-directed-graph" data-label="dag-related?" style="left:540.000px;top:1050.000px">
+          <div class="diamond-shape"><div class="diamond-text">DAG-related?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-directed-graph-topo" data-label="topological sort" style="left:960.000px;top:1050.000px">
+          <div class="leaf-shape">Topological Sort</div>
+        </div>
+        <div class="node node-diamond" id="node-shortest-path" data-label="shortest-path problem?" style="left:540.000px;top:1440.000px">
+          <div class="diamond-shape"><div class="diamond-text">Shortest-path problem?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-shortest-path-weighted" data-label="is the graph weighted?" style="left:960.000px;top:1440.000px">
+          <div class="diamond-shape"><div class="diamond-text">Is the graph Weighted?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-shortest-path-dijkstra" data-label="dijkstra&#x27;s algorithm" style="left:1380.000px;top:1440.000px">
+          <div class="leaf-shape">Dijkstra&#x27;s Algorithm</div>
+        </div>
+        <div class="node node-leaf" id="node-shortest-path-bfs" data-label="bfs" style="left:1380.000px;top:1830.000px">
+          <div class="leaf-shape">BFS</div>
+        </div>
+        <div class="node node-diamond" id="node-connectivity" data-label="connectivity problem?" style="left:540.000px;top:2060.000px">
+          <div class="diamond-shape"><div class="diamond-text">Connectivity problem?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-connectivity-dsu" data-label="disjoint set union" style="left:960.000px;top:2060.000px">
+          <div class="leaf-shape">Disjoint Set Union</div>
+        </div>
+        <div class="node node-diamond" id="node-graph-smallcontraints" data-label="small constraints?" style="left:540.000px;top:2450.000px">
+          <div class="diamond-shape"><div class="diamond-text">Small constraints?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-graph-smallcontraints-dfs" data-label="dfs/backtracking" style="left:960.000px;top:2450.000px">
+          <div class="leaf-shape">DFS/backtracking</div>
+        </div>
+        <div class="node node-leaf" id="node-graph-smallcontraints-bfs" data-label="bfs" style="left:960.000px;top:2840.000px">
+          <div class="leaf-shape">BFS</div>
+        </div>
+        <div class="node node-diamond" id="node-sorted-search" data-label="sorted input or monotonic answer?" style="left:120.000px;top:3070.000px">
+          <div class="diamond-shape"><div class="diamond-text">Sorted input or monotonic answer?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-range-query" data-label="dynamic range or order queries?" style="left:540.000px;top:3070.000px">
+          <div class="diamond-shape"><div class="diamond-text">Dynamic range or order queries?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-range-query-leaf" data-label="ordered set / fenwick / segment tree" style="left:960.000px;top:3070.000px">
+          <div class="leaf-shape">Ordered Set / Fenwick / Segment Tree</div>
+        </div>
+        <div class="node node-leaf" id="node-sorted-search-binarysearch" data-label="binary search" style="left:960.000px;top:3460.000px">
+          <div class="leaf-shape">Binary Search</div>
+        </div>
+        <div class="node node-diamond" id="node-kth-smallest" data-label="kth smallest/largest?" style="left:120.000px;top:3690.000px">
+          <div class="diamond-shape"><div class="diamond-text">kth smallest/largest?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-kth-smallest-heap" data-label="heap / sortings" style="left:540.000px;top:3690.000px">
+          <div class="leaf-shape">Heap / Sortings</div>
+        </div>
+        <div class="node node-diamond" id="node-linked-list" data-label="linked list problem?" style="left:120.000px;top:4080.000px">
+          <div class="diamond-shape"><div class="diamond-text">Linked list problem?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-linked-list-pointer-pattern" data-label="fast/slow or fixed-gap pointers?" style="left:540.000px;top:4080.000px">
+          <div class="diamond-shape"><div class="diamond-text">Fast/slow or fixed-gap pointers?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-linked-list-twopointers" data-label="two pointers" style="left:960.000px;top:4080.000px">
+          <div class="leaf-shape">Two pointers</div>
+        </div>
+        <div class="node node-diamond" id="node-linked-list-multi-merge" data-label="merge many sorted lists?" style="left:540.000px;top:4470.000px">
+          <div class="diamond-shape"><div class="diamond-text">Merge many sorted lists?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-linked-list-heap" data-label="heap / divide and conquer" style="left:960.000px;top:4470.000px">
+          <div class="leaf-shape">Heap / Divide and Conquer</div>
+        </div>
+        <div class="node node-leaf" id="node-linked-list-manipulation" data-label="linked list manipulation" style="left:960.000px;top:4860.000px">
+          <div class="leaf-shape">Linked List Manipulation</div>
+        </div>
+        <div class="node node-diamond" id="node-hash-table" data-label="fast lookup, counting, or grouping?" style="left:120.000px;top:5090.000px">
+          <div class="diamond-shape"><div class="diamond-text">Fast lookup, counting, or grouping?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-hash-table-leaf" data-label="hash table / counting" style="left:540.000px;top:5090.000px">
+          <div class="leaf-shape">Hash Table / Counting</div>
+        </div>
+        <div class="node node-diamond" id="node-intervals" data-label="merge, insert, or scan intervals?" style="left:120.000px;top:5480.000px">
+          <div class="diamond-shape"><div class="diamond-text">Merge, insert, or scan intervals?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-intervals-leaf" data-label="sorting + interval scan" style="left:540.000px;top:5480.000px">
+          <div class="leaf-shape">Sorting + Interval Scan</div>
+        </div>
+        <div class="node node-diamond" id="node-partition-array" data-label="in-place array partitioning?" style="left:120.000px;top:5870.000px">
+          <div class="diamond-shape"><div class="diamond-text">In-place array partitioning?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-partition-array-leaf" data-label="two pointers / partitioning" style="left:540.000px;top:5870.000px">
+          <div class="leaf-shape">Two pointers / Partitioning</div>
+        </div>
+        <div class="node node-diamond" id="node-string-segmentation" data-label="split/match string with dictionary?" style="left:120.000px;top:6260.000px">
+          <div class="diamond-shape"><div class="diamond-text">Split/match string with dictionary?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-string-pattern" data-label="prefix or pattern matching?" style="left:540.000px;top:6260.000px">
+          <div class="diamond-shape"><div class="diamond-text">Prefix or pattern matching?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-string-pattern-leaf" data-label="trie / string matching / rolling hash" style="left:960.000px;top:6260.000px">
+          <div class="leaf-shape">Trie / String Matching / Rolling Hash</div>
+        </div>
+        <div class="node node-leaf" id="node-string-segmentation-leaf" data-label="trie / dp / memoization" style="left:960.000px;top:6650.000px">
+          <div class="leaf-shape">Trie / DP / Memoization</div>
+        </div>
+        <div class="node node-diamond" id="node-small-constraints" data-label="small constraints?" style="left:120.000px;top:6880.000px">
+          <div class="diamond-shape"><div class="diamond-text">Small constraints?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-small-constraints-efficiency" data-label="is brute force enough?" style="left:540.000px;top:6880.000px">
+          <div class="diamond-shape"><div class="diamond-text">Is brute force enough?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-small-constraints-bruteforce/backtracking" data-label="brute force / backtracking" style="left:960.000px;top:6880.000px">
+          <div class="leaf-shape">Brute force / Backtracking</div>
+        </div>
+        <div class="node node-leaf" id="node-small-constraints-dp" data-label="dynamic programming" style="left:960.000px;top:7660.000px">
+          <div class="leaf-shape">Dynamic Programming</div>
+        </div>
+        <div class="node node-diamond" id="node-bitmask-state" data-label="subset state?" style="left:540.000px;top:7270.000px">
+          <div class="diamond-shape"><div class="diamond-text">Subset state?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-bitmask-dp" data-label="bitmask dp" style="left:960.000px;top:7270.000px">
+          <div class="leaf-shape">Bitmask DP</div>
+        </div>
+        <div class="node node-diamond" id="node-subarrays" data-label="subarray or substring problem?" style="left:120.000px;top:8280.000px">
+          <div class="diamond-shape"><div class="diamond-text">Subarray or substring problem?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-sums" data-label="sum/additive problem?" style="left:120.000px;top:7890.000px">
+          <div class="diamond-shape"><div class="diamond-text">Sum/additive problem?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-subarrays-window" data-label="maintain a valid window?" style="left:540.000px;top:8280.000px">
+          <div class="diamond-shape"><div class="diamond-text">Maintain a valid window?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-subarrays-prefixsums" data-label="prefix sums" style="left:540.000px;top:7890.000px">
+          <div class="leaf-shape">Prefix Sums</div>
+        </div>
+        <div class="node node-leaf" id="node-subarrays-twopointers" data-label="sliding window" style="left:960.000px;top:8280.000px">
+          <div class="leaf-shape">Sliding Window</div>
+        </div>
+        <div class="node node-diamond" id="node-subarrays-structure" data-label="need nearest greater/smaller bounds?" style="left:540.000px;top:8670.000px">
+          <div class="diamond-shape"><div class="diamond-text">Need nearest greater/smaller bounds?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-subarrays-monotonic-stack" data-label="monotonic stack" style="left:960.000px;top:8670.000px">
+          <div class="leaf-shape">Monotonic Stack</div>
+        </div>
+        <div class="node node-leaf" id="node-subarrays-dp" data-label="dynamic programming" style="left:960.000px;top:9060.000px">
+          <div class="leaf-shape">Dynamic Programming</div>
+        </div>
+        <div class="node node-diamond" id="node-max/min" data-label="compute a max/min?" style="left:120.000px;top:9290.000px">
+          <div class="diamond-shape"><div class="diamond-text">Compute a max/min?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-max/min-binarysearch-hint" data-label="sorted index or monotonic answer?" style="left:540.000px;top:9290.000px">
+          <div class="diamond-shape"><div class="diamond-text">Sorted index or monotonic answer?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-max/min-structure" data-label="need nearest greater/smaller bounds?" style="left:540.000px;top:9680.000px">
+          <div class="diamond-shape"><div class="diamond-text">Need nearest greater/smaller bounds?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-max/min-monotonic-stack" data-label="monotonic stack" style="left:960.000px;top:9680.000px">
+          <div class="leaf-shape">Monotonic Stack</div>
+        </div>
+        <div class="node node-diamond" id="node-max/min-subproblem" data-label="split into subproblems?" style="left:540.000px;top:10070.000px">
+          <div class="diamond-shape"><div class="diamond-text">Split into subproblems?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-max/min-greedyhuh" data-label="greedy solution?" style="left:540.000px;top:10460.000px">
+          <div class="diamond-shape"><div class="diamond-text">Greedy solution?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-max/min-binarysearch" data-label="binary search" style="left:960.000px;top:9290.000px">
+          <div class="leaf-shape">Binary Search</div>
+        </div>
+        <div class="node node-leaf" id="node-max/min-dp" data-label="dynamic programming" style="left:960.000px;top:10070.000px">
+          <div class="leaf-shape">Dynamic Programming</div>
+        </div>
+        <div class="node node-leaf" id="node-max/min-greedy" data-label="greedy algorithms" style="left:960.000px;top:10460.000px">
+          <div class="leaf-shape">Greedy Algorithms</div>
+        </div>
+        <div class="node node-diamond" id="node-counting" data-label="count number of ways?" style="left:120.000px;top:10850.000px">
+          <div class="diamond-shape"><div class="diamond-text">Count number of ways?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-counting-efficiency" data-label="is brute force enough?" style="left:540.000px;top:10850.000px">
+          <div class="diamond-shape"><div class="diamond-text">Is brute force enough?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-counting-bruteforce/backtracking" data-label="brute force / backtracking" style="left:960.000px;top:10850.000px">
+          <div class="leaf-shape">Brute Force / Backtracking</div>
+        </div>
+        <div class="node node-leaf" id="node-counting-dp" data-label="dynamic programming" style="left:960.000px;top:11240.000px">
+          <div class="leaf-shape">Dynamic Programming</div>
+        </div>
+        <div class="node node-diamond" id="node-sequence-count" data-label="multiple sequences?" style="left:120.000px;top:11470.000px">
+          <div class="diamond-shape"><div class="diamond-text">Multiple sequences?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-sequence-count-monotonic" data-label="monotonic condition?" style="left:540.000px;top:11470.000px">
+          <div class="diamond-shape"><div class="diamond-text">Monotonic condition?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-sequence-count-subproblems" data-label="split into subproblems?" style="left:540.000px;top:11860.000px">
+          <div class="diamond-shape"><div class="diamond-text">Split into subproblems?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-sequence-count-twopointers" data-label="two pointers" style="left:960.000px;top:11470.000px">
+          <div class="leaf-shape">Two pointers</div>
+        </div>
+        <div class="node node-leaf" id="node-sequence-count-dp" data-label="dynamic programming" style="left:960.000px;top:11860.000px">
+          <div class="leaf-shape">Dynamic Programming</div>
+        </div>
+        <div class="node node-diamond" id="node-find-indices" data-label="find/enumerate indices?" style="left:120.000px;top:12250.000px">
+          <div class="diamond-shape"><div class="diamond-text">Find/enumerate indices?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-find-indices-monotonic" data-label="monotonic condition?" style="left:540.000px;top:12250.000px">
+          <div class="diamond-shape"><div class="diamond-text">Monotonic condition?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-find-indices-twopointers" data-label="two pointers" style="left:960.000px;top:12250.000px">
+          <div class="leaf-shape">Two pointers</div>
+        </div>
+        <div class="node node-diamond" id="node-constant-memory" data-label="need o(1) memory?" style="left:120.000px;top:12640.000px">
+          <div class="diamond-shape"><div class="diamond-text">Need O(1) memory?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-constant-memory-monotonic" data-label="monotonic condition?" style="left:540.000px;top:12640.000px">
+          <div class="diamond-shape"><div class="diamond-text">Monotonic condition?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-constant-memory-twopointers" data-label="two pointers" style="left:960.000px;top:12640.000px">
+          <div class="leaf-shape">Two pointers</div>
+        </div>
+        <div class="node node-diamond" id="node-parse-symbols" data-label="need to parse symbols?" style="left:120.000px;top:13030.000px">
+          <div class="diamond-shape"><div class="diamond-text">Need to parse symbols?</div></div>
+        </div>
+        <div class="node node-diamond" id="node-parse-symbols-optimize" data-label="optimize/count valid spans?" style="left:540.000px;top:13030.000px">
+          <div class="diamond-shape"><div class="diamond-text">Optimize/count valid spans?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-parse-symbols-dp" data-label="dynamic programming" style="left:960.000px;top:13030.000px">
+          <div class="leaf-shape">Dynamic Programming</div>
+        </div>
+        <div class="node node-leaf" id="node-parse-symbols-stack" data-label="stack" style="left:960.000px;top:13420.000px">
+          <div class="leaf-shape">Stack</div>
+        </div>
+        <div class="node node-diamond" id="node-design-check" data-label="object with operation guarantees?" style="left:120.000px;top:13650.000px">
+          <div class="diamond-shape"><div class="diamond-text">Object with operation guarantees?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-design-leaf" data-label="design + supporting data structures" style="left:540.000px;top:13650.000px">
+          <div class="leaf-shape">Design + Supporting Data Structures</div>
+        </div>
+        <div class="node node-diamond" id="node-simulation-check" data-label="direct transformation or simulation?" style="left:120.000px;top:14040.000px">
+          <div class="diamond-shape"><div class="diamond-text">Direct transformation or simulation?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-simulation-leaf" data-label="simulation / basic dsa" style="left:540.000px;top:14040.000px">
+          <div class="leaf-shape">Simulation / Basic DSA</div>
+        </div>
+        <div class="node node-diamond" id="node-math-bit-check" data-label="math identities, powers, or bit tricks?" style="left:120.000px;top:14430.000px">
+          <div class="diamond-shape"><div class="diamond-text">Math identities, powers, or bit tricks?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-math-bit-leaf" data-label="math / bit manipulation" style="left:960.000px;top:14820.000px">
+          <div class="leaf-shape">Math / Bit Manipulation</div>
+        </div>
+        <div class="node node-diamond" id="node-number-theory" data-label="number properties?" style="left:540.000px;top:14430.000px">
+          <div class="diamond-shape"><div class="diamond-text">Number properties?</div></div>
+        </div>
+        <div class="node node-leaf" id="node-number-theory-leaf" data-label="number theory" style="left:960.000px;top:14430.000px">
+          <div class="leaf-shape">Number Theory</div>
+        </div>
+        <div class="node node-leaf" id="node-specialized-leaf" data-label="specialized / advanced pattern" style="left:540.000px;top:15050.000px">
+          <div class="leaf-shape">Specialized / Advanced Pattern</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const chart = document.getElementById('chart');
+  const wrap = document.getElementById('scaledWrap');
+  const fitToggle = document.getElementById('fitToggle');
+  const searchBox = document.getElementById('searchBox');
+  const findBtn = document.getElementById('findBtn');
+  const topBtn = document.getElementById('topBtn');
+  const logicalWidth = 1712;
+  const logicalHeight = 15500;
+  let currentMatch = -1;
+  let currentMatches = [];
+
+  function applyScale() {
+    const available = Math.max(320, document.documentElement.clientWidth);
+    const scale = fitToggle.checked ? Math.min(1, available / logicalWidth) : 1;
+    chart.style.transform = `scale(${scale})`;
+    wrap.style.height = `${Math.ceil(logicalHeight * scale)}px`;
+    wrap.style.width = fitToggle.checked ? '100%' : `${logicalWidth}px`;
+    document.body.style.minWidth = fitToggle.checked ? '0' : `${logicalWidth}px`;
+  }
+
+  function doFind() {
+    document.querySelectorAll('.node.match').forEach(el => el.classList.remove('match'));
+    const q = searchBox.value.trim().toLowerCase();
+    if (!q) return;
+    currentMatches = [...document.querySelectorAll('.node')].filter(el =>
+      (el.dataset.label || '').includes(q)
+    );
+    if (!currentMatches.length) {
+      searchBox.setCustomValidity('No matching node found');
+      searchBox.reportValidity();
+      searchBox.setCustomValidity('');
+      return;
+    }
+    currentMatch = (currentMatch + 1) % currentMatches.length;
+    const el = currentMatches[currentMatch];
+    el.classList.add('match');
+    const rect = el.getBoundingClientRect();
+    const toolbarH = document.querySelector('.toolbar').getBoundingClientRect().height;
+    window.scrollBy({
+      top: rect.top - toolbarH - 80,
+      left: 0,
+      behavior: 'smooth'
+    });
+  }
+
+  fitToggle.addEventListener('change', applyScale);
+  window.addEventListener('resize', applyScale);
+  findBtn.addEventListener('click', doFind);
+  searchBox.addEventListener('keydown', e => {
+    if (e.key === 'Enter') doFind();
+  });
+  searchBox.addEventListener('input', () => {
+    currentMatch = -1;
+    currentMatches = [];
+    document.querySelectorAll('.node.match').forEach(el => el.classList.remove('match'));
+  });
+  topBtn.addEventListener('click', () => window.scrollTo({top:0, behavior:'smooth'}));
+
+  applyScale();
+})();
+</script>
+</body>
+</html>
