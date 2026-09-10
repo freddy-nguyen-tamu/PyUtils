@@ -13,6 +13,7 @@ A small Chrome/Edge Manifest V3 extension for the Comix reader.
 - **Left Arrow** clicks the enabled `Previous chapter` button.
 - **Up/Down Arrow** scroll continuously while held.
 - **Configurable scroll speed**: click the extension icon and enter a pixels-per-second value from 50 to 10000.
+- **Toggle-only reader controls**: the top chapter bar, right-side toolbar, and bottom width/zoom controls are hidden by default. A tiny button at the absolute bottom-right corner is always available; click it once to reveal all reader controls and click it again to hide them.
 - Keyboard overrides are skipped while typing in an input, textarea, select, contenteditable area, or textbox.
 
 ## Install in Chrome / Edge
@@ -26,4 +27,4 @@ A small Chrome/Edge Manifest V3 extension for the Comix reader.
 
 ## Notes
 
-The extension targets the stable ARIA labels in the supplied reader markup rather than the SVG path itself. It also uses the reader's `--rpage-max-w` custom property, which is the width value shown as 50% in the supplied page.
+The extension targets the stable ARIA labels in the supplied reader markup rather than the SVG path itself. It also uses the reader's `--rpage-max-w` custom property, which is the width value shown as 50% in the supplied page. The hide rule explicitly targets both `.rpage-floatctl` and `.rpage-bottombar`; the reveal state applies to both selectors, fixing the earlier comma-selector bug that could leave the bottom bar visible. The extension-owned 16×16 px toggle remains at the bottom-right corner at all times.

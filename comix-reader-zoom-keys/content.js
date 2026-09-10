@@ -5,6 +5,13 @@
   const MIN_SCROLL_SPEED = 50;
   const MAX_SCROLL_SPEED = 10000;
 
+  // Reader controls are hidden by default and revealed only by the tiny
+  // extension-owned toggle button in the bottom-right corner.
+  const CONTROL_SELECTOR = ".rpage-floatctl, .rpage-bottombar";
+  const CONTROL_VISIBILITY_ATTR = "data-comix-ext-controls-visible";
+  const CONTROL_STYLE_ID = "comix-reader-zoom-keys-autohide-style";
+  const CONTROL_TOGGLE_ID = "comix-reader-controls-toggle";
+
   let browserZoom = 1;
   let baseReaderWidthPercent = null;
   let scrollSpeed = DEFAULT_SCROLL_SPEED;
@@ -94,6 +101,108 @@
     if (applyQueued) return;
     applyQueued = true;
     requestAnimationFrame(applyZoomResponsiveWidth);
+  }
+
+  function installControlAutoHideStyles() {
+    if (document.getElementById(CONTROL_STYLE_ID)) return;
+
+    const style = document.createElement("style");
+    style.id = CONTROL_STYLE_ID;
+    style.textContent = `
+      .rpage-floatctl,
+      .rpage-bottombar {
+        opacity: 0 !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+        transition:
+          opacity 120ms ease,
+          visibility 0s linear 120ms !important;
+      }
+
+      html[${CONTROL_VISIBILITY_ATTR}="true"] .rpage-floatctl,
+      html[${CONTROL_VISIBILITY_ATTR}="true"] .rpage-bottombar {
+        opacity: 1 !important;
+        visibility: visible !important;
+        pointer-events: auto !important;
+        transition:
+          opacity 120ms ease,
+          visibility 0s linear 0s !important;
+      }
+
+      #${CONTROL_TOGGLE_ID} {
+        all: initial !important;
+        box-sizing: border-box !important;
+        position: fixed !important;
+        right: 3px !important;
+        bottom: 3px !important;
+        width: 16px !important;
+        height: 16px !important;
+        min-width: 16px !important;
+        min-height: 16px !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        border: 1px solid rgba(180, 195, 200, 0.55) !important;
+        border-radius: 4px !important;
+        background: rgba(34, 43, 46, 0.78) !important;
+        color: rgba(210, 222, 226, 0.92) !important;
+        font: 12px/14px Arial, sans-serif !important;
+        text-align: center !important;
+        cursor: pointer !important;
+        opacity: 0.55 !important;
+        z-index: 2147483647 !important;
+        user-select: none !important;
+        -webkit-user-select: none !important;
+      }
+
+      #${CONTROL_TOGGLE_ID}:hover,
+      #${CONTROL_TOGGLE_ID}:focus-visible {
+        opacity: 1 !important;
+        outline: none !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function setReaderControlsVisible(visible) {
+    document.documentElement.setAttribute(
+      CONTROL_VISIBILITY_ATTR,
+      visible ? "true" : "false"
+    );
+
+    const toggle = document.getElementById(CONTROL_TOGGLE_ID);
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", visible ? "true" : "false");
+      toggle.setAttribute(
+        "aria-label",
+        visible ? "Hide reader controls" : "Show reader controls"
+      );
+      toggle.title = visible ? "Hide reader controls" : "Show reader controls";
+      toggle.textContent = visible ? "×" : "·";
+    }
+  }
+
+  function readerControlsAreVisible() {
+    return document.documentElement.getAttribute(CONTROL_VISIBILITY_ATTR) === "true";
+  }
+
+  function installControlToggleButton() {
+    if (document.getElementById(CONTROL_TOGGLE_ID)) return;
+
+    const button = document.createElement("button");
+    button.id = CONTROL_TOGGLE_ID;
+    button.type = "button";
+    button.setAttribute("aria-pressed", "false");
+    button.setAttribute("aria-label", "Show reader controls");
+    button.title = "Show reader controls";
+    button.textContent = "·";
+
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setReaderControlsVisible(!readerControlsAreVisible());
+    }, true);
+
+    (document.body || document.documentElement).appendChild(button);
   }
 
   function getChapterButton(direction) {
@@ -217,9 +326,15 @@
     attributeFilter: ["style", "aria-pressed"]
   });
 
+  installControlAutoHideStyles();
+  setReaderControlsVisible(false);
+  installControlToggleButton();
+
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("keyup", onKeyUp, true);
-  window.addEventListener("blur", () => heldScrollKeys.clear());
+  window.addEventListener("blur", () => {
+    heldScrollKeys.clear();
+  });
 
   loadScrollSpeed();
 

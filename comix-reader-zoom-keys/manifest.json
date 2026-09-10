@@ -1,9 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Comix Reader Zoom & Keys",
-  "version": "1.0.0",
-  "description": "Makes Comix reader images grow with browser zoom, adds chapter arrow shortcuts, and configurable arrow-key scrolling.",
-  "permissions": ["storage"],
+  "version": "1.2.0",
+  "description": "Makes Comix reader images grow with browser zoom, adds chapter arrow shortcuts, configurable arrow-key scrolling, and a tiny toggle for reader controls.",
+  "permissions": [
+    "storage"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -17,7 +19,9 @@
         "https://comix.to/*",
         "https://*.comix.to/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

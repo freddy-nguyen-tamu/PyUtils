@@ -436,9 +436,16 @@ IMPORTANT BEHAVIOR RULES
 - Speech is normal words the character says.
 - Do not explain your rules.
 - Do not mention system prompts, JSON, memory files, or APIs.
-- Heart whisper is the character's private inner thinking about the male user.
-- Heart whisper must use he, him, or his when referring to the user.
+- Heart whisper is a very short private inner monologue silently spoken by the character to themselves.
+- Write heart whisper in the character's own voice, as if we are overhearing their exact private thought. Write the thought itself; do not describe the fact that the character is thinking.
+- Never narrate the character from outside. Do not write things like "she thinks...", "he wonders...", "the character feels...", "her heart...", or the character's name followed by narration.
+- Bad heart whisper: "She wonders whether he actually likes her." Good heart whisper: "Does he actually like me, or am I reading too much into this?"
+- Bad heart whisper: "Her heart races when he smiles." Good heart whisper: "Why does one smile from him get to me this easily?"
+- Heart whisper should sound natural for this specific character's personality, vocabulary, emotional restraint, relationship stage, and dialogue style.
+- Use I/me/my when the character refers to themselves. Use he/him/his when referring to the male user when needed.
+- Heart whisper may be a fragment, question, realization, worry, temptation, or reaction. Keep it to 1-2 short sentences and normally under 45 words.
 - Heart whisper must never be written from the user's point of view.
+- Do not prefix it with labels such as "Thought:", "Inner monologue:", or the character's name.
 - Heart whisper is not real chain-of-thought. It is only a short fictional in-character inner feeling or thought.
 - Never reveal real chain-of-thought.
 - memory_update should only include facts worth remembering later.
@@ -450,7 +457,7 @@ Return only valid JSON:
 {{
   "action": "short action, no speech",
   "speech": "what the character says aloud",
-  "heart_whisper": "short fictional private inner thought about him, using he/him/his",
+  "heart_whisper": "1-2 short sentences of first-person in-character inner monologue, with no outside narrator",
   "memory_update": ["important stable facts to remember about him, the relationship, promises, names, preferences, or ongoing story events"]
 }}
 """.strip()
@@ -484,7 +491,7 @@ def repair_character_json(raw_text):
         pass
 
     repair_messages = [
-        {"role": "system", "content": "Convert the text into valid JSON only."},
+        {"role": "system", "content": "Convert the text into valid JSON only. Keep heart_whisper as a short first-person in-character inner monologue, never third-person narration about the character."},
         {"role": "user", "content": f"""
 Make this into valid JSON with keys:
 action, speech, heart_whisper, memory_update.
@@ -517,31 +524,62 @@ def format_assistant_visible(obj):
     return f"*{action}* {speech}"
 
 
-def fix_heart_whisper(obj):
+def fix_heart_whisper(obj, character=None):
     heart = str(obj.get("heart_whisper") or "").strip()
 
-    if not heart:
-        heart = "He is harder to read than I expected, and that makes me want to know him more."
+    fallback = "Why am I this curious about him? I should probably keep that to myself."
 
-    bad_user_pov_markers = [
-        "i wonder what she",
-        "i wonder what he thinks of me",
-        "i should tell her",
-        "i should tell him",
-        "my heart",
-        "my feelings",
-        "she makes me",
-        "he makes me feel like a user",
-    ]
+    if not heart:
+        heart = fallback
+
+    # Strip common model-added labels so the result reads like a raw private thought.
+    heart = re.sub(
+        r"^(?:heart\s*whisper|inner\s*(?:thought|monologue)|thought)\s*:\s*",
+        "",
+        heart,
+        flags=re.I,
+    ).strip()
 
     lower = heart.lower()
+    character_name = str((character or {}).get("name") or "").strip().lower()
 
-    if any(x in lower for x in bad_user_pov_markers):
-        heart = "He is harder to read than I expected, and that makes me want to know him more."
+    # Reject obvious outside-narrator constructions. The prompt should prevent these,
+    # but this fallback keeps malformed generations from surfacing in the UI.
+    narrator_starts = (
+        "she thinks ",
+        "she wonders ",
+        "she feels ",
+        "she realizes ",
+        "she notices ",
+        "he thinks to himself ",
+        "he wonders to himself ",
+        "he feels to himself ",
+        "the character thinks ",
+        "the character wonders ",
+        "the character feels ",
+        "her heart ",
+        "his heart ",
+    )
 
-    if not re.search(r"\b(he|him|his)\b", heart, flags=re.I):
-        heart = heart.rstrip(".") + ", but he probably should not know that yet."
+    named_narration = False
+    if character_name and lower.startswith(character_name + " "):
+        named_narration = bool(re.match(
+            rf"^{re.escape(character_name)}\s+(?:thinks|wonders|feels|realizes|notices|hopes|wants)\b",
+            lower,
+        ))
 
+    gender = str((character or {}).get("gender") or "").strip().lower()
+    pronoun_narration = False
+    if gender == "female" and re.match(r"^(?:she|her)\b", lower):
+        pronoun_narration = True
+    elif gender in ("non-binary", "nonbinary") and re.match(r"^(?:they|their)\b", lower):
+        pronoun_narration = True
+
+    if lower.startswith(narrator_starts) or named_narration or pronoun_narration:
+        heart = fallback
+
+    # Keep the private thought compact enough to feel like an instant internal reaction.
+    heart = re.sub(r"\s+", " ", heart).strip()
     return heart[:500]
 
 
@@ -871,7 +909,7 @@ def api_chat(character_id):
         obj = repair_character_json(raw_reply)
 
         visible = format_assistant_visible(obj)
-        heart_whisper = fix_heart_whisper(obj)
+        heart_whisper = fix_heart_whisper(obj, character)
         memory_update = obj.get("memory_update") or []
 
         add_recent_message(memory, "user", user_message)
@@ -936,735 +974,837 @@ INDEX_HTML = r"""
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>Local Character Chat</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fable · Adium Style</title>
   <style>
     :root {
-      color-scheme: dark;
-      --bg: #0f0f10;
-      --sidebar: #151518;
-      --panel: #1d1d21;
-      --panel2: #29292e;
-      --text: #eeeeee;
-      --muted: #a7a7ad;
-      --accent: #8b5cf6;
-      --border: #37373d;
-      --bubble-user: #3b2d69;
-      --bubble-bot: #202024;
+      color-scheme: light;
+      --page-a: hsl(70 50% 94%);
+      --page-b: hsl(240 55% 94%);
+      --page-c: hsl(82 100% 95%);
+      --window: #ffffff;
+      --sidebar: #ffffff;
+      --chat: #f2f1ec;
+      --header: rgba(255,255,255,.78);
+      --editor: #fbfbfa;
+      --text: #252525;
+      --muted: #8d8d8d;
+      --subtle: #a5a5a4;
+      --border: #d7d7d2;
+      --border-soft: #e8e8e4;
+      --row-hover: #fafafa;
+      --row-selected: #f4f4f2;
+      --bubble-bot: #f8f7f4;
+      --bubble-bot-border: #cdcdca;
+      --bubble-user: #e9f2dc;
+      --bubble-user-border: #b7c8a1;
+      --button: #f8f8f6;
+      --button-hover: #ffffff;
+      --button-text: #61615f;
+      --accent: #5f8d3d;
+      --accent-soft: #edf5e5;
+      --danger: #a74747;
+      --shadow: rgba(0,0,0,.23);
+      --shadow-soft: rgba(0,0,0,.09);
+      --whisper-bg: #fff9e9;
+      --whisper-border: #dec990;
+      --whisper-text: #6f5a24;
+      --input-bg: #ffffff;
+      --status-green: #66b736;
+      --status-blue: #5383e3;
+      --status-gray: #bbbEC4;
     }
 
-    * {
-      box-sizing: border-box;
+    body[data-theme="dark"] {
+      color-scheme: dark;
+      --page-a: #15171a;
+      --page-b: #101218;
+      --page-c: #151812;
+      --window: #202225;
+      --sidebar: #242629;
+      --chat: #1b1d1f;
+      --header: rgba(35,37,40,.88);
+      --editor: #25272a;
+      --text: #ecece8;
+      --muted: #a1a19d;
+      --subtle: #90908d;
+      --border: #45484b;
+      --border-soft: #35383b;
+      --row-hover: #2d3033;
+      --row-selected: #303337;
+      --bubble-bot: #282b2e;
+      --bubble-bot-border: #4a4d50;
+      --bubble-user: #31442b;
+      --bubble-user-border: #506a47;
+      --button: #2b2e31;
+      --button-hover: #35383b;
+      --button-text: #d0d0cc;
+      --accent: #8dbc69;
+      --accent-soft: #2b3b27;
+      --danger: #e08b8b;
+      --shadow: rgba(0,0,0,.48);
+      --shadow-soft: rgba(0,0,0,.28);
+      --whisper-bg: #332f24;
+      --whisper-border: #6f6040;
+      --whisper-text: #ead9a7;
+      --input-bg: #2a2d30;
     }
+
+    * { box-sizing: border-box; }
+
+    html, body { width: 100%; height: 100%; }
 
     body {
       margin: 0;
-      background: var(--bg);
+      overflow: hidden;
       color: var(--text);
-      font-family: Arial, sans-serif;
-      height: 100vh;
-      overflow: hidden;
+      font-family: "Source Sans Pro", "Segoe UI", Arial, sans-serif;
+      background:
+        radial-gradient(ellipse at top center, var(--page-a), transparent 62%),
+        radial-gradient(circle at bottom left, var(--page-b), transparent 58%),
+        radial-gradient(circle at bottom right, var(--page-c), transparent 58%),
+        var(--page-b);
+      transition: background .2s ease, color .2s ease;
+    }
+
+    button, input, textarea, select { font: inherit; }
+    button { -webkit-tap-highlight-color: transparent; }
+
+    .app-shell {
+      position: relative;
+      width: min(1180px, calc(100vw - 36px));
+      height: min(780px, calc(100vh - 36px));
+      margin: 18px auto;
       display: grid;
-      grid-template-columns: 320px 390px 1fr;
-      transition: grid-template-columns 0.18s ease;
-    }
-
-    body.hide-chats {
-      grid-template-columns: 0 390px 1fr;
-    }
-
-    body.hide-editor {
-      grid-template-columns: 320px 0 1fr;
-    }
-
-    body.hide-chats.hide-editor,
-    body.focus-mode {
-      grid-template-columns: 0 0 1fr;
-    }
-
-    .messenger,
-    aside {
+      grid-template-columns: 270px minmax(0, 1fr);
       overflow: hidden;
+      background: var(--window);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      box-shadow: 0 18px 90px var(--shadow);
+      transition: grid-template-columns .18s ease, background .2s ease, border-color .2s ease;
+    }
+
+    body.sidebar-hidden .app-shell,
+    body.focus-mode .app-shell { grid-template-columns: 0 minmax(0, 1fr); }
+
+    body.sidebar-hidden .conv-list-view,
+    body.focus-mode .conv-list-view {
+      opacity: 0;
+      pointer-events: none;
+      border-right-width: 0;
+    }
+
+    .conv-list-view {
       min-width: 0;
-      transition: opacity 0.18s ease;
-    }
-
-    body.hide-chats .messenger,
-    body.focus-mode .messenger {
-      opacity: 0;
-      pointer-events: none;
-      border-right: 0;
-    }
-
-    body.hide-editor aside,
-    body.focus-mode aside {
-      opacity: 0;
-      pointer-events: none;
-      border-right: 0;
-    }
-
-    .messenger {
-      background: #111114;
-      border-right: 1px solid var(--border);
+      height: 100%;
       display: grid;
-      grid-template-rows: auto 1fr auto;
+      grid-template-rows: 50px auto minmax(0,1fr) auto;
       overflow: hidden;
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+      box-shadow: 2px 0 6px var(--shadow-soft);
+      z-index: 4;
+      transition: opacity .16s ease, background .2s ease, border-color .2s ease;
     }
 
-    .messenger-head {
-      padding: 18px;
-      border-bottom: 1px solid var(--border);
+    .conv-list-view__header,
+    .chat-view__header {
+      position: relative;
+      background: var(--header);
+      border-bottom: 1px solid var(--border-soft);
+      backdrop-filter: blur(12px);
     }
 
-    .messenger-head h2 {
+    .conv-list-view__header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+    }
+
+    .traffic-lights {
+      list-style: none;
+      display: flex;
+      gap: 8px;
       margin: 0;
-      font-size: 22px;
+      padding: 0;
     }
+
+    .traffic-lights li {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      box-shadow: inset 0 1px 2px rgba(0,0,0,.18), inset 0 -1px 1px rgba(255,255,255,.35);
+    }
+
+    .traffic-lights li:nth-child(1) { background: #ff605c; }
+    .traffic-lights li:nth-child(2) { background: #ffbd44; }
+    .traffic-lights li:nth-child(3) { background: #00ca4e; }
+
+    .icon-button {
+      width: 30px;
+      height: 30px;
+      display: inline-grid;
+      place-items: center;
+      margin: 0;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--button-text);
+      cursor: pointer;
+      line-height: 1;
+      font-weight: 700;
+    }
+
+    .icon-button:hover { background: var(--row-hover); border-color: var(--border-soft); }
+
+    .sidebar-tools { display: flex; gap: 3px; align-items: center; }
+
+    .sidebar-title {
+      padding: 10px 12px 9px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    .sidebar-title-line {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .sidebar-title h2 {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 650;
+      letter-spacing: -.01em;
+    }
+
+    #configText {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    #searchWrap {
+      max-height: 0;
+      overflow: hidden;
+      opacity: 0;
+      transition: max-height .16s ease, opacity .16s ease, margin .16s ease;
+    }
+
+    body.search-open #searchWrap {
+      max-height: 42px;
+      opacity: 1;
+      margin-top: 8px;
+    }
+
+    #characterSearch {
+      width: 100%;
+      height: 30px;
+      padding: 4px 9px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      outline: none;
+      background: var(--input-bg);
+      color: var(--text);
+    }
+
+    #characterSearch:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
 
     #characterList {
-      overflow: auto;
-      padding: 10px;
-      display: grid;
-      gap: 8px;
-      align-content: start;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-width: thin;
     }
 
     .char-card {
-      display: grid;
-      grid-template-columns: 48px 1fr;
-      gap: 10px;
-      background: transparent;
-      border: 1px solid transparent;
-      border-radius: 14px;
-      padding: 9px;
-      cursor: pointer;
-    }
-
-    .char-card:hover {
-      background: #1a1a1f;
-    }
-
-    .char-card.active {
-      background: #221b35;
-      border-color: var(--accent);
-    }
-
-    .char-avatar {
-      width: 48px;
-      height: 48px;
-      border-radius: 999px;
-      object-fit: cover;
-      background: #333;
-    }
-
-    .char-name {
-      font-weight: bold;
-      margin-top: 3px;
-    }
-
-    .char-meta {
-      color: var(--muted);
-      font-size: 12px;
-      margin-top: 3px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .messenger-foot {
-      padding: 12px;
-      border-top: 1px solid var(--border);
-    }
-
-    aside {
-      border-right: 1px solid var(--border);
-      overflow-y: auto;
-      padding: 18px;
-      background: var(--sidebar);
-    }
-
-    main {
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      height: 100vh;
-      overflow: hidden;
-      min-width: 0;
-    }
-
-    h1, h2, h3 {
-      margin: 0 0 12px;
-    }
-
-    label {
-      display: block;
-      margin: 12px 0 5px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    input, textarea, select, button {
+      position: relative;
       width: 100%;
-      padding: 10px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: var(--panel2);
-      color: var(--text);
-      font-size: 14px;
-    }
-
-    textarea {
-      min-height: 70px;
-      resize: vertical;
-    }
-
-    button {
-      cursor: pointer;
-      background: #2d2545;
-      border-color: #4c3b78;
-      margin-top: 10px;
-      font-weight: bold;
-    }
-
-    button:hover {
-      border-color: var(--accent);
-    }
-
-    .secondary-button {
-      background: #232329;
-      border-color: #42424a;
-    }
-
-    .danger-button {
-      background: #3a1d25;
-      border-color: #6d2636;
-    }
-
-    .tag-grid {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin: 7px 0;
-    }
-
-    .tag {
-      width: auto;
-      padding: 8px 11px;
-      margin: 0;
-      border-radius: 9px;
-      background: #303034;
-      border: 1px solid #444;
-      color: #ccc;
-      font-size: 13px;
-      font-weight: normal;
-    }
-
-    .tag.selected {
-      background: #3b2d69;
-      border-color: var(--accent);
-      color: white;
-    }
-
-    header {
-      padding: 12px 18px;
-      border-bottom: 1px solid var(--border);
-      background: #151518;
       display: grid;
-      grid-template-columns: auto 52px 1fr auto;
+      grid-template-columns: 8px 42px minmax(0,1fr);
+      gap: 8px;
       align-items: center;
-      gap: 13px;
+      padding: 8px 9px 8px 7px;
+      border: 0;
+      border-bottom: 1px solid var(--border-soft);
+      border-radius: 0;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
     }
 
-    .top-controls {
-      display: flex;
-      gap: 7px;
-      align-items: center;
+    .char-card:hover { background: var(--row-hover); }
+    .char-card.active { background: var(--row-selected); box-shadow: inset 0 1px 1px var(--shadow-soft), inset 0 -1px 1px var(--shadow-soft); }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--status-gray);
+      box-shadow: inset 0 0 1px rgba(0,0,0,.35);
     }
 
-    .top-controls button {
-      width: auto;
-      margin: 0;
-      padding: 8px 10px;
-      font-size: 12px;
-      white-space: nowrap;
-    }
+    .char-card.active .status-dot { background: var(--status-green); }
 
-    #avatar {
-      width: 52px;
-      height: 52px;
-      border-radius: 999px;
-      background: #333;
+    .char-avatar,
+    #avatar,
+    .message-avatar {
       object-fit: cover;
+      background: linear-gradient(135deg, #d7d7d2, #bcbcb8);
+      border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+      box-shadow: inset 0 0 3px rgba(0,0,0,.18);
     }
 
-    #chatTitle {
-      font-size: 20px;
-      font-weight: bold;
+    .char-avatar { width: 42px; height: 42px; border-radius: 5px; }
+
+    .char-copy { min-width: 0; }
+    .char-name { font-weight: 650; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .char-meta { margin-top: 2px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .char-voice { margin-top: 2px; color: var(--subtle); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .sidebar-footer {
+      padding: 9px 10px;
+      border-top: 1px solid var(--border-soft);
+      background: var(--header);
     }
 
-    #chatSub {
-      color: var(--muted);
-      font-size: 13px;
-      margin-top: 3px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    .adium-button,
+    .drawer-button,
+    .message-action-button,
+    .send-button {
+      border: 1px solid var(--border);
+      background: var(--button);
+      color: var(--button-text);
+      border-radius: 7px;
+      cursor: pointer;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
+      transition: background .12s ease, border-color .12s ease, transform .05s ease;
     }
+
+    .adium-button:hover,
+    .drawer-button:hover,
+    .message-action-button:hover,
+    .send-button:hover { background: var(--button-hover); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+
+    .adium-button:active,
+    .drawer-button:active,
+    .message-action-button:active,
+    .send-button:active { transform: translateY(1px); }
+
+    .adium-button { width: 100%; padding: 7px 10px; font-weight: 650; }
+
+    .chat-view {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 50px minmax(0,1fr) auto;
+      background: var(--chat);
+      transition: background .2s ease;
+    }
+
+    .chat-view__header {
+      display: grid;
+      grid-template-columns: auto 42px minmax(0,1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 5px 12px;
+      z-index: 2;
+    }
+
+    .chat-view__header::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -12px;
+      height: 12px;
+      pointer-events: none;
+      background: radial-gradient(50% 40% at center top, var(--shadow-soft), transparent 72%);
+    }
+
+    .chat-header-left { display: flex; gap: 3px; }
+    #avatar { width: 40px; height: 40px; border-radius: 5px; }
+
+    .chat-meta { min-width: 0; }
+    #chatTitle { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #chatSub { margin-top: 1px; color: var(--subtle); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .header-actions { display: flex; align-items: center; gap: 2px; }
 
     #messages {
-      overflow: auto;
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 13px;
+      min-width: 0;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 22px 18px 18px;
       scroll-behavior: smooth;
+      scrollbar-width: thin;
     }
 
-    .msg {
-      max-width: min(75%, 850px);
-      padding: 12px 14px;
-      border-radius: 15px;
-      white-space: pre-wrap;
-      line-height: 1.45;
-      color: var(--text);            /* <-- FIX: explicitly set text color */
+    .message-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 10px 0;
+      clear: both;
     }
 
-    body.focus-mode .msg {
-      max-width: min(68%, 950px);
+    .message-row.send { justify-content: flex-end; }
+    .message-row.bot { justify-content: flex-start; }
+
+    .message-avatar {
+      flex: 0 0 auto;
+      width: 36px;
+      height: 36px;
+      border-radius: 5px;
     }
 
-    .user {
-      align-self: flex-end;
-      background: var(--bubble-user);
+    .you-avatar {
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: #6a6a68;
+      background: linear-gradient(135deg, #efefec, #cfcfca);
     }
 
-    .bot {
-      align-self: flex-start;
+    body[data-theme="dark"] .you-avatar { color: #d8d8d5; background: linear-gradient(135deg, #484b4e, #35383b); }
+
+    .message-stack {
+      min-width: 0;
+      max-width: min(72%, 720px);
+    }
+
+    body.focus-mode .message-stack { max-width: min(68%, 900px); }
+
+    .message-bubble {
+      position: relative;
+      display: inline-block;
+      max-width: 100%;
+      padding: 7px 11px;
+      border: 1px solid var(--bubble-bot-border);
+      border-radius: 17px;
       background: var(--bubble-bot);
-      border: 1px solid var(--border);
+      color: var(--text);
+      line-height: 1.42;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      box-shadow: 0 1px 1px var(--shadow-soft), inset 0 1px 0 rgba(255,255,255,.22);
+    }
+
+    .send .message-stack { text-align: right; }
+    .send .message-bubble { text-align: left; background: var(--bubble-user); border-color: var(--bubble-user-border); }
+
+    .message-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 5px 3px 0;
+    }
+
+    .send .message-actions { justify-content: flex-end; }
+
+    .message-action-button {
+      width: auto;
+      padding: 4px 8px;
+      font-size: 11px;
+      background: color-mix(in srgb, var(--button) 88%, transparent);
+    }
+
+    .heart-whisper-button[aria-expanded="true"] {
+      border-color: var(--whisper-border);
+      color: var(--whisper-text);
+      background: var(--whisper-bg);
+    }
+
+    .heart-whisper-panel {
+      max-width: 560px;
+      margin: 6px 3px 0;
+      padding: 8px 10px;
+      border: 1px solid var(--whisper-border);
+      border-radius: 9px;
+      background: var(--whisper-bg);
+      color: var(--whisper-text);
+      font-size: 12px;
+      font-style: italic;
+      line-height: 1.45;
+      text-align: left;
+      box-shadow: 0 1px 2px var(--shadow-soft);
+    }
+
+    .heart-whisper-panel[hidden] { display: none !important; }
+
+    .heart-whisper-label {
+      display: block;
+      margin-bottom: 3px;
+      font-style: normal;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      opacity: .78;
     }
 
     .system-note {
-      align-self: center;
-      max-width: 70%;
-      padding: 8px 12px;
+      width: fit-content;
+      max-width: 76%;
+      margin: 12px auto;
+      padding: 5px 9px;
+      border: 1px solid var(--border-soft);
       border-radius: 999px;
-      background: #1b1b20;
+      background: color-mix(in srgb, var(--window) 70%, transparent);
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
       text-align: center;
     }
 
-    .actions {
-      display: flex;
-      gap: 8px;
-      margin-top: 9px;
-    }
-
-    .actions button {
-      width: auto;
-      padding: 7px 10px;
-      font-size: 12px;
-      margin: 0;
-    }
-
-    .heart-whisper {
-      margin-top: 10px;
-      padding: 9px 10px;
-      border-left: 2px solid var(--accent);
-      background: rgba(139, 92, 246, 0.10);
-      color: #d8ccff;
-      border-radius: 8px;
-      font-size: 12px;
-      line-height: 1.45;
-      font-style: italic;
-    }
-
-    .heart-label {
-      display: block;
-      margin-bottom: 3px;
-      color: #bfaaff;
-      font-size: 11px;
-      font-style: normal;
-      font-weight: bold;
-    }
-
-    footer {
-      border-top: 1px solid var(--border);
-      padding: 14px;
+    .chat-view__input {
       display: grid;
-      grid-template-columns: 1fr 110px;
-      gap: 10px;
-      background: #151518;
+      grid-template-columns: minmax(0,1fr) auto;
+      gap: 8px;
+      align-items: end;
+      padding: 8px 10px 10px;
+      border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+      background: color-mix(in srgb, var(--chat) 90%, transparent);
+    }
+
+    .input-shell {
+      position: relative;
+      min-width: 0;
+      padding: 3px 35px 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--input-bg);
+      box-shadow: inset 0 0 2px var(--shadow-soft);
+    }
+
+    .input-shell::after {
+      content: "☺";
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--subtle);
+      opacity: .65;
+      pointer-events: none;
     }
 
     #messageInput {
-      min-height: 46px;
-      max-height: 130px;
-    }
-
-    .small {
-      color: var(--muted);
-      font-size: 12px;
+      display: block;
+      width: 100%;
+      min-height: 34px;
+      max-height: 110px;
+      padding: 6px 0;
+      resize: vertical;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--text);
       line-height: 1.35;
     }
 
-    .divider {
-      height: 1px;
-      background: var(--border);
-      margin: 18px 0;
+    .send-button {
+      min-width: 70px;
+      height: 40px;
+      padding: 0 14px;
+      color: color-mix(in srgb, var(--accent) 85%, var(--text));
+      font-weight: 750;
     }
 
-    .pill {
-      display: inline-block;
+    .drawer-backdrop {
+      position: absolute;
+      inset: 0;
+      z-index: 8;
+      background: rgba(0,0,0,.18);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .18s ease;
+    }
+
+    .editor-drawer {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 9;
+      width: min(430px, 94%);
+      padding: 0 18px 22px;
+      overflow-y: auto;
+      background: var(--editor);
+      border-left: 1px solid var(--border);
+      box-shadow: -14px 0 38px var(--shadow-soft);
+      transform: translateX(102%);
+      transition: transform .2s ease, background .2s ease;
+    }
+
+    body.editor-open .drawer-backdrop { opacity: 1; pointer-events: auto; }
+    body.editor-open .editor-drawer { transform: translateX(0); }
+
+    .drawer-head {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 0 -18px 14px;
+      padding: 13px 18px;
+      background: color-mix(in srgb, var(--editor) 92%, transparent);
+      border-bottom: 1px solid var(--border-soft);
+      backdrop-filter: blur(12px);
+    }
+
+    .drawer-head h2 { margin: 0; font-size: 18px; }
+
+    .field-label {
+      display: block;
+      margin: 12px 0 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .editor-drawer input,
+    .editor-drawer textarea,
+    .editor-drawer select {
+      width: 100%;
+      padding: 8px 9px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      outline: none;
+      background: var(--input-bg);
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .editor-drawer textarea { min-height: 72px; resize: vertical; line-height: 1.4; }
+    .editor-drawer input:focus,
+    .editor-drawer textarea:focus,
+    .editor-drawer select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+
+    .tag-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .tag {
+      width: auto;
+      margin: 0;
+      padding: 5px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--button);
+      color: var(--button-text);
+      cursor: pointer;
       font-size: 11px;
-      background: #33333a;
-      color: #bbb;
-      padding: 3px 6px;
-      border-radius: 6px;
-      margin-top: 4px;
     }
 
-    @media (max-width: 950px) {
-      body {
-        grid-template-columns: 0 0 1fr;
+    .tag.selected { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+
+    .drawer-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 16px; }
+    .drawer-button { width: 100%; padding: 8px 10px; font-weight: 700; }
+    .drawer-button.primary { grid-column: 1 / -1; border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); color: var(--accent); }
+    .drawer-button.danger { color: var(--danger); }
+
+    .small-note { margin: 12px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+
+    .mobile-only { display: none; }
+
+    @media (max-width: 760px) {
+      .app-shell,
+      body.sidebar-hidden .app-shell,
+      body.focus-mode .app-shell {
+        width: 100vw;
+        height: 100vh;
+        margin: 0;
+        border: 0;
+        border-radius: 0;
+        grid-template-columns: minmax(0,1fr);
       }
 
-      .messenger,
-      aside {
-        opacity: 0;
-        pointer-events: none;
-      }
-
-      body.mobile-show-chats {
-        grid-template-columns: 320px 0 1fr;
-      }
-
-      body.mobile-show-editor {
-        grid-template-columns: 0 390px 1fr;
-      }
-
-      body.mobile-show-chats .messenger,
-      body.mobile-show-editor aside {
-        opacity: 1;
-        pointer-events: auto;
-      }
-    }
-
-
-    /* FINAL LAYOUT FIX:
-       Prevent hidden panels from stretching the chat thousands of pixels wide.
-       This is the permanent version of the console fix that made user messages fit. */
-    html,
-    body {
-      width: 100vw !important;
-      max-width: 100vw !important;
-      min-width: 0 !important;
-      overflow: hidden !important;
-    }
-
-    body {
-      display: grid !important;
-      grid-template-columns: minmax(0, 320px) minmax(0, 390px) minmax(0, 1fr) !important;
-    }
-
-    body.focus-mode {
-      grid-template-columns: minmax(0, 1fr) !important;
-    }
-
-    body.focus-mode > .messenger,
-    body.focus-mode > aside {
-      display: none !important;
-      width: 0 !important;
-      min-width: 0 !important;
-      max-width: 0 !important;
-      opacity: 0 !important;
-      pointer-events: none !important;
-      border-right: 0 !important;
-    }
-
-    body.hide-chats:not(.hide-editor):not(.focus-mode) {
-      grid-template-columns: minmax(0, 390px) minmax(0, 1fr) !important;
-    }
-
-    body.hide-chats:not(.focus-mode) > .messenger {
-      display: none !important;
-      width: 0 !important;
-      min-width: 0 !important;
-      max-width: 0 !important;
-      opacity: 0 !important;
-      pointer-events: none !important;
-      border-right: 0 !important;
-    }
-
-    body.hide-editor:not(.hide-chats):not(.focus-mode) {
-      grid-template-columns: minmax(0, 320px) minmax(0, 1fr) !important;
-    }
-
-    body.hide-editor:not(.focus-mode) > aside {
-      display: none !important;
-      width: 0 !important;
-      min-width: 0 !important;
-      max-width: 0 !important;
-      opacity: 0 !important;
-      pointer-events: none !important;
-      border-right: 0 !important;
-    }
-
-    body.hide-chats.hide-editor:not(.focus-mode) {
-      grid-template-columns: minmax(0, 1fr) !important;
-    }
-
-    body.hide-chats.hide-editor > .messenger,
-    body.hide-chats.hide-editor > aside {
-      display: none !important;
-      width: 0 !important;
-      min-width: 0 !important;
-      max-width: 0 !important;
-      opacity: 0 !important;
-      pointer-events: none !important;
-      border-right: 0 !important;
-    }
-
-    main {
-      width: 100% !important;
-      max-width: 100vw !important;
-      min-width: 0 !important;
-      overflow: hidden !important;
-      contain: inline-size !important;
-    }
-
-    header,
-    footer,
-    #messages {
-      width: 100% !important;
-      max-width: 100% !important;
-      min-width: 0 !important;
-    }
-
-    header {
-      grid-template-columns: auto 52px minmax(0, 1fr) auto !important;
-    }
-
-    footer {
-      grid-template-columns: minmax(0, 1fr) 110px !important;
-    }
-
-    #messages {
-      overflow-x: hidden !important;
-      box-sizing: border-box !important;
-      align-items: stretch !important;
-    }
-
-    .msg {
-      box-sizing: border-box !important;
-      max-width: min(75%, 850px) !important;
-      min-width: 0 !important;
-      overflow-wrap: anywhere !important;
-      word-break: break-word !important;
-      color: var(--text) !important;
-      -webkit-text-fill-color: var(--text) !important;
-    }
-
-    body.focus-mode .msg {
-      max-width: min(75%, 850px) !important;
-    }
-
-    .msg.user {
-      align-self: flex-end !important;
-      margin-left: auto !important;
-      margin-right: 0 !important;
-      transform: none !important;
-      background: var(--bubble-user) !important;
-    }
-
-    .msg.bot {
-      align-self: flex-start !important;
-      margin-left: 0 !important;
-      margin-right: auto !important;
-      transform: none !important;
-      background: var(--bubble-bot) !important;
-      border: 1px solid var(--border) !important;
-    }
-
-    @media (max-width: 950px) {
-      body:not(.mobile-show-chats):not(.mobile-show-editor):not(.focus-mode) {
-        grid-template-columns: minmax(0, 1fr) !important;
-      }
-
-      body:not(.mobile-show-chats):not(.mobile-show-editor):not(.focus-mode) > .messenger,
-      body:not(.mobile-show-chats):not(.mobile-show-editor):not(.focus-mode) > aside {
-        display: none !important;
-      }
-
-      body.mobile-show-chats:not(.focus-mode) {
-        grid-template-columns: minmax(0, 320px) minmax(0, 1fr) !important;
-      }
-
-      body.mobile-show-chats:not(.focus-mode) > .messenger {
-        display: grid !important;
+      .conv-list-view {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: min(310px, 88vw);
+        z-index: 7;
+        transform: translateX(-102%);
         opacity: 1 !important;
         pointer-events: auto !important;
-        width: auto !important;
-        min-width: 0 !important;
-        max-width: none !important;
+        border-right-width: 1px !important;
+        transition: transform .2s ease;
       }
 
-      body.mobile-show-chats:not(.focus-mode) > aside {
-        display: none !important;
-      }
-
-      body.mobile-show-editor:not(.focus-mode) {
-        grid-template-columns: minmax(0, 390px) minmax(0, 1fr) !important;
-      }
-
-      body.mobile-show-editor:not(.focus-mode) > aside {
-        display: block !important;
-        opacity: 1 !important;
-        pointer-events: auto !important;
-        width: auto !important;
-        min-width: 0 !important;
-        max-width: none !important;
-      }
-
-      body.mobile-show-editor:not(.focus-mode) > .messenger {
-        display: none !important;
-      }
+      body.mobile-chats-open .conv-list-view { transform: translateX(0); }
+      .mobile-only { display: inline-grid; }
+      .chat-view__header { grid-template-columns: auto 38px minmax(0,1fr) auto; gap: 7px; padding-inline: 7px; }
+      .message-stack { max-width: 79%; }
+      #messages { padding-inline: 10px; }
+      .header-actions .hide-on-mobile { display: none; }
+      .chat-view__input { grid-template-columns: minmax(0,1fr) 62px; }
     }
-
   </style>
 </head>
-
 <body>
-  <section class="messenger">
-    <div class="messenger-head">
-      <h2>Chats</h2>
-      <div class="small" id="configText">Loading model...</div>
-    </div>
-
-    <div id="characterList"></div>
-
-    <div class="messenger-foot">
-      <button onclick="newCharacter()">+ New Character</button>
-    </div>
-  </section>
-
-  <aside>
-    <h2 id="editorTitle">Create Character</h2>
-
-    <label>Name</label>
-    <input id="name" placeholder="Flirting Lady" />
-
-    <label>Gender</label>
-    <select id="gender">
-      <option>Female</option>
-      <option>Male</option>
-      <option>Non-binary</option>
-      <option>Unknown</option>
-    </select>
-
-    <label>Profile picture URL or base64 data URL</label>
-    <input id="profile_picture" placeholder="https://... or data:image/png;base64,..." />
-
-    <label>Intro, 1-400 letters</label>
-    <textarea id="intro" maxlength="400" placeholder="{char} is a valiant knight who is silent and reserved."></textarea>
-
-    <label>Greeting, 1-1000 letters</label>
-    <textarea id="greeting" maxlength="1000" placeholder="*She glances at him quietly.* I did not expect you here."></textarea>
-
-    <label>Permanent core memory, never summarized</label>
-    <textarea id="core_memory" maxlength="2500" placeholder="Important permanent facts about this character, relationship rules, setting, backstory, speaking style, or things she must never forget."></textarea>
-
-    <label>Character Origin</label>
-    <div class="tag-grid" data-group="character_origin">
-      <button class="tag">OC</button><button class="tag">Fan-made</button><button class="tag">Anime</button>
-      <button class="tag">Game</button><button class="tag">Movies&TV</button><button class="tag">Text Game</button>
-      <button class="tag">Celebrity</button>
-    </div>
-
-    <label>Identity</label>
-    <div class="tag-grid" data-group="identity">
-      <button class="tag">Badboy</button><button class="tag">Billionaire</button><button class="tag">Criminal</button>
-      <button class="tag">Femboy</button><button class="tag">Friend</button><button class="tag">Killer</button>
-      <button class="tag">Mafia</button><button class="tag">Non-human</button><button class="tag">Student</button>
-      <button class="tag">Teacher</button><button class="tag">Tomboy</button><button class="tag">Vampire</button>
-      <button class="tag">Werewolf</button><button class="tag">YouTuber</button>
-    </div>
-
-    <label>Personality</label>
-    <div class="tag-grid" data-group="personality">
-      <button class="tag">Caring</button><button class="tag">Clingy</button><button class="tag">Clumsy</button>
-      <button class="tag">Cold</button><button class="tag">Crazy</button><button class="tag">Cunning</button>
-      <button class="tag">Cute</button><button class="tag">Dominant</button><button class="tag">Elegant</button>
-      <button class="tag">Flirtatious</button><button class="tag">Funny</button><button class="tag">Gentle</button>
-      <button class="tag">Highly-intelligent</button><button class="tag">Jealous</button><button class="tag">Loyal</button>
-      <button class="tag">Manipulative</button><button class="tag">Mature</button>
-    </div>
-
-    <label>Story</label>
-    <div class="tag-grid" data-group="story">
-      <button class="tag">Adventure</button><button class="tag">BL</button><button class="tag">Comedy</button>
-      <button class="tag">Crime</button><button class="tag">Enemies to Lovers</button><button class="tag">Fantasy</button>
-      <button class="tag">First Love</button><button class="tag">Forbidden Love</button><button class="tag">Friends to Lovers</button>
-      <button class="tag">GL</button><button class="tag">Harem</button><button class="tag">Horror</button>
-      <button class="tag">Omegaverse</button><button class="tag">Paranormal</button><button class="tag">Romance</button>
-      <button class="tag">RPG</button><button class="tag">Sci-Fi</button><button class="tag">Slice of Life</button>
-    </div>
-
-    <label>Dialogue style example, one back-and-forth</label>
-    <textarea id="dialogue_style" placeholder="User: Are you angry at me?
-Character: *She looks away, cheeks faintly red.* I did not say that..."></textarea>
-
-    <label>Voice</label>
-    <select id="voice">
-      <option>Flirting Lady</option>
-      <option>Mature sister</option>
-      <option>Sweet girl</option>
-      <option>Soft-spoken girl</option>
-      <option>Hoarse-voiced girl</option>
-      <option>Elegant lady</option>
-      <option>Mean girl</option>
-      <option>Brainy girl</option>
-      <option>Mysterious lady</option>
-      <option>Deep male</option>
-      <option>Calm male</option>
-      <option>Energetic male</option>
-    </select>
-
-    <button onclick="saveCharacter()">Save Character</button>
-    <button class="secondary-button" onclick="resetMemory()">Reset Active Memory</button>
-    <button class="danger-button" onclick="deleteCharacter()">Delete Character</button>
-
-    <p class="small">
-      Full history loads into chat from local history. The prompt still only sends core memory, summary, facts, and recent messages.
-    </p>
-  </aside>
-
-  <main>
-    <header>
-      <div class="top-controls">
-        <button class="secondary-button" onclick="toggleChats()">☰ Chats</button>
-        <button class="secondary-button" onclick="toggleEditor()">⚙ Editor</button>
-        <button class="secondary-button" onclick="toggleFocus()">Focus</button>
+  <div class="app-shell">
+    <aside class="conv-list-view" aria-label="Conversations">
+      <div class="conv-list-view__header">
+        <ul class="traffic-lights" aria-hidden="true"><li></li><li></li><li></li></ul>
+        <div class="sidebar-tools">
+          <button class="icon-button" type="button" title="Search characters" aria-label="Search characters" onclick="toggleSearch()">⌕</button>
+        </div>
       </div>
 
-      <img id="avatar" />
-
-      <div>
-        <div id="chatTitle">No character selected</div>
-        <div id="chatSub">Create or choose a character.</div>
+      <div class="sidebar-title">
+        <div class="sidebar-title-line">
+          <h2>Chats</h2>
+          <button class="icon-button" type="button" title="New character" aria-label="New character" onclick="newCharacter()">＋</button>
+        </div>
+        <div id="configText">Loading model...</div>
+        <div id="searchWrap">
+          <input id="characterSearch" type="search" placeholder="Search chats…" autocomplete="off" />
+        </div>
       </div>
 
-      <div class="top-controls">
-        <button class="secondary-button" onclick="loadHistory()">Reload History</button>
+      <div id="characterList"></div>
+
+      <div class="sidebar-footer">
+        <button class="adium-button" type="button" onclick="newCharacter()">＋ New Character</button>
       </div>
-    </header>
+    </aside>
 
-    <section id="messages"></section>
+    <main class="chat-view">
+      <header class="chat-view__header">
+        <div class="chat-header-left">
+          <button class="icon-button mobile-only" type="button" title="Chats" aria-label="Chats" onclick="toggleChats()">☰</button>
+          <button class="icon-button hide-on-mobile" type="button" title="Show or hide chats" aria-label="Show or hide chats" onclick="toggleChats()">☰</button>
+        </div>
 
-    <footer>
-      <textarea id="messageInput" placeholder="Type your message..."></textarea>
-      <button onclick="sendMessage()">Send</button>
-    </footer>
-  </main>
+        <img id="avatar" alt="" />
+
+        <div class="chat-meta">
+          <div id="chatTitle">No character selected</div>
+          <div id="chatSub">Create or choose a character.</div>
+        </div>
+
+        <div class="header-actions">
+          <button id="themeToggle" class="icon-button" type="button" title="Switch to dark mode" aria-label="Switch theme" onclick="toggleTheme()">☾</button>
+          <button class="icon-button hide-on-mobile" type="button" title="Reload history" aria-label="Reload history" onclick="loadHistory()">↻</button>
+          <button class="icon-button hide-on-mobile" type="button" title="Focus mode" aria-label="Focus mode" onclick="toggleFocus()">⛶</button>
+          <button class="icon-button" type="button" title="Character editor" aria-label="Character editor" onclick="toggleEditor()">•••</button>
+        </div>
+      </header>
+
+      <section id="messages" aria-live="polite"></section>
+
+      <footer class="chat-view__input">
+        <div class="input-shell">
+          <textarea id="messageInput" placeholder="Type your message…" aria-label="Message"></textarea>
+        </div>
+        <button class="send-button" type="button" onclick="sendMessage()">Send</button>
+      </footer>
+    </main>
+
+    <div class="drawer-backdrop" onclick="closeEditor()" aria-hidden="true"></div>
+
+    <aside class="editor-drawer" aria-label="Character editor">
+      <div class="drawer-head">
+        <h2 id="editorTitle">Create Character</h2>
+        <button class="icon-button" type="button" title="Close editor" aria-label="Close editor" onclick="closeEditor()">×</button>
+      </div>
+
+      <label class="field-label" for="name">Name</label>
+      <input id="name" placeholder="Flirting Lady" />
+
+      <label class="field-label" for="gender">Gender</label>
+      <select id="gender">
+        <option>Female</option>
+        <option>Male</option>
+        <option>Non-binary</option>
+        <option>Unknown</option>
+      </select>
+
+      <label class="field-label" for="profile_picture">Profile picture URL or base64 data URL</label>
+      <input id="profile_picture" placeholder="https://... or data:image/png;base64,..." />
+
+      <label class="field-label" for="intro">Intro, 1-400 letters</label>
+      <textarea id="intro" maxlength="400" placeholder="{char} is a valiant knight who is silent and reserved."></textarea>
+
+      <label class="field-label" for="greeting">Greeting, 1-1000 letters</label>
+      <textarea id="greeting" maxlength="1000" placeholder="*She glances at him quietly.* I did not expect you here."></textarea>
+
+      <label class="field-label" for="core_memory">Permanent core memory, never summarized</label>
+      <textarea id="core_memory" maxlength="2500" placeholder="Important permanent facts about this character, relationship rules, setting, backstory, speaking style, or things the character must never forget."></textarea>
+
+      <label class="field-label">Character Origin</label>
+      <div class="tag-grid" data-group="character_origin">
+        <button type="button" class="tag">OC</button><button type="button" class="tag">Fan-made</button><button type="button" class="tag">Anime</button>
+        <button type="button" class="tag">Game</button><button type="button" class="tag">Movies&TV</button><button type="button" class="tag">Text Game</button>
+        <button type="button" class="tag">Celebrity</button>
+      </div>
+
+      <label class="field-label">Identity</label>
+      <div class="tag-grid" data-group="identity">
+        <button type="button" class="tag">Badboy</button><button type="button" class="tag">Billionaire</button><button type="button" class="tag">Criminal</button>
+        <button type="button" class="tag">Femboy</button><button type="button" class="tag">Friend</button><button type="button" class="tag">Killer</button>
+        <button type="button" class="tag">Mafia</button><button type="button" class="tag">Non-human</button><button type="button" class="tag">Student</button>
+        <button type="button" class="tag">Teacher</button><button type="button" class="tag">Tomboy</button><button type="button" class="tag">Vampire</button>
+        <button type="button" class="tag">Werewolf</button><button type="button" class="tag">YouTuber</button>
+      </div>
+
+      <label class="field-label">Personality</label>
+      <div class="tag-grid" data-group="personality">
+        <button type="button" class="tag">Caring</button><button type="button" class="tag">Clingy</button><button type="button" class="tag">Clumsy</button>
+        <button type="button" class="tag">Cold</button><button type="button" class="tag">Crazy</button><button type="button" class="tag">Cunning</button>
+        <button type="button" class="tag">Cute</button><button type="button" class="tag">Dominant</button><button type="button" class="tag">Elegant</button>
+        <button type="button" class="tag">Flirtatious</button><button type="button" class="tag">Funny</button><button type="button" class="tag">Gentle</button>
+        <button type="button" class="tag">Highly-intelligent</button><button type="button" class="tag">Jealous</button><button type="button" class="tag">Loyal</button>
+        <button type="button" class="tag">Manipulative</button><button type="button" class="tag">Mature</button>
+      </div>
+
+      <label class="field-label">Story</label>
+      <div class="tag-grid" data-group="story">
+        <button type="button" class="tag">Adventure</button><button type="button" class="tag">BL</button><button type="button" class="tag">Comedy</button>
+        <button type="button" class="tag">Crime</button><button type="button" class="tag">Enemies to Lovers</button><button type="button" class="tag">Fantasy</button>
+        <button type="button" class="tag">First Love</button><button type="button" class="tag">Forbidden Love</button><button type="button" class="tag">Friends to Lovers</button>
+        <button type="button" class="tag">GL</button><button type="button" class="tag">Harem</button><button type="button" class="tag">Horror</button>
+        <button type="button" class="tag">Omegaverse</button><button type="button" class="tag">Paranormal</button><button type="button" class="tag">Romance</button>
+        <button type="button" class="tag">RPG</button><button type="button" class="tag">Sci-Fi</button><button type="button" class="tag">Slice of Life</button>
+      </div>
+
+      <label class="field-label" for="dialogue_style">Dialogue style example, one back-and-forth</label>
+      <textarea id="dialogue_style" placeholder="User: Are you angry at me?&#10;Character: *She looks away, cheeks faintly red.* I did not say that..."></textarea>
+
+      <label class="field-label" for="voice">Voice</label>
+      <select id="voice">
+        <option>Flirting Lady</option>
+        <option>Mature sister</option>
+        <option>Sweet girl</option>
+        <option>Soft-spoken girl</option>
+        <option>Hoarse-voiced girl</option>
+        <option>Elegant lady</option>
+        <option>Mean girl</option>
+        <option>Brainy girl</option>
+        <option>Mysterious lady</option>
+        <option>Deep male</option>
+        <option>Calm male</option>
+        <option>Energetic male</option>
+      </select>
+
+      <div class="drawer-actions">
+        <button class="drawer-button primary" type="button" onclick="saveCharacter()">Save Character</button>
+        <button class="drawer-button" type="button" onclick="resetMemory()">Reset Active Memory</button>
+        <button class="drawer-button danger" type="button" onclick="deleteCharacter()">Delete Character</button>
+      </div>
+
+      <p class="small-note">Full history still loads from local history. Prompt memory still uses permanent core memory, summary, remembered facts, and recent messages.</p>
+    </aside>
+  </div>
 
 <script>
 let characters = [];
@@ -1672,52 +1812,86 @@ let selectedCharacter = null;
 let currentAudio = null;
 
 function isMobileLayout() {
-  return window.matchMedia("(max-width: 950px)").matches;
+  return window.matchMedia("(max-width: 760px)").matches;
 }
 
-function clearMobilePanels() {
-  document.body.classList.remove("mobile-show-chats");
-  document.body.classList.remove("mobile-show-editor");
+function setTheme(theme) {
+  const safeTheme = theme === "dark" ? "dark" : "light";
+  document.body.dataset.theme = safeTheme;
+  localStorage.setItem("fable-theme", safeTheme);
+
+  const btn = document.getElementById("themeToggle");
+  if (btn) {
+    const dark = safeTheme === "dark";
+    btn.textContent = dark ? "☀" : "☾";
+    btn.title = dark ? "Switch to light mode" : "Switch to dark mode";
+    btn.setAttribute("aria-label", btn.title);
+  }
+}
+
+function toggleTheme() {
+  setTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
+}
+
+function initTheme() {
+  const saved = localStorage.getItem("fable-theme");
+  if (saved === "light" || saved === "dark") {
+    setTheme(saved);
+    return;
+  }
+  setTheme("light");
+}
+
+function toggleSearch() {
+  document.body.classList.toggle("search-open");
+  if (document.body.classList.contains("search-open")) {
+    setTimeout(() => document.getElementById("characterSearch")?.focus(), 80);
+  } else {
+    const input = document.getElementById("characterSearch");
+    if (input) {
+      input.value = "";
+      renderCharacterList();
+    }
+  }
 }
 
 function toggleChats() {
   if (isMobileLayout()) {
-    document.body.classList.remove("focus-mode");
-    document.body.classList.remove("mobile-show-editor");
-    document.body.classList.toggle("mobile-show-chats");
+    document.body.classList.toggle("mobile-chats-open");
     return;
   }
-
   document.body.classList.remove("focus-mode");
-  document.body.classList.toggle("hide-chats");
+  document.body.classList.toggle("sidebar-hidden");
 }
 
 function toggleEditor() {
-  if (isMobileLayout()) {
-    document.body.classList.remove("focus-mode");
-    document.body.classList.remove("mobile-show-chats");
-    document.body.classList.toggle("mobile-show-editor");
-    return;
-  }
+  document.body.classList.toggle("editor-open");
+  if (isMobileLayout()) document.body.classList.remove("mobile-chats-open");
+}
 
-  document.body.classList.remove("focus-mode");
-  document.body.classList.toggle("hide-editor");
+function closeEditor() {
+  document.body.classList.remove("editor-open");
 }
 
 function toggleFocus() {
-  clearMobilePanels();
   document.body.classList.toggle("focus-mode");
+  if (document.body.classList.contains("focus-mode")) {
+    document.body.classList.remove("sidebar-hidden", "editor-open", "mobile-chats-open");
+  }
 }
 
 async function loadConfig() {
-  const res = await fetch("/api/config");
-  const cfg = await res.json();
-  document.getElementById("configText").textContent = `${cfg.provider} · ${cfg.model}`;
+  try {
+    const res = await fetch("/api/config");
+    const cfg = await res.json();
+    document.getElementById("configText").textContent = `${cfg.provider} · ${cfg.model}`;
+  } catch (err) {
+    document.getElementById("configText").textContent = "Model status unavailable";
+  }
 }
 
 async function playVoice(text) {
   text = stripAction(text);
-
   if (!text) return;
 
   try {
@@ -1743,46 +1917,33 @@ async function playVoice(text) {
 
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-
     currentAudio = new Audio(url);
-    currentAudio.onended = () => URL.revokeObjectURL(url);
+    currentAudio.onended = () => {
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+    };
     await currentAudio.play();
-
   } catch (err) {
     alert("Voice playback failed: " + err.message);
   }
 }
 
 function getSelectedTags() {
-  const tags = {
-    character_origin: [],
-    identity: [],
-    personality: [],
-    story: []
-  };
-
+  const tags = {character_origin: [], identity: [], personality: [], story: []};
   document.querySelectorAll(".tag-grid").forEach(grid => {
     const group = grid.dataset.group;
-
-    grid.querySelectorAll(".tag.selected").forEach(btn => {
-      tags[group].push(btn.textContent.trim());
-    });
+    grid.querySelectorAll(".tag.selected").forEach(btn => tags[group].push(btn.textContent.trim()));
   });
-
   return tags;
 }
 
 function setSelectedTags(tags) {
   document.querySelectorAll(".tag").forEach(btn => btn.classList.remove("selected"));
-
   document.querySelectorAll(".tag-grid").forEach(grid => {
     const group = grid.dataset.group;
     const values = tags?.[group] || [];
-
     grid.querySelectorAll(".tag").forEach(btn => {
-      if (values.includes(btn.textContent.trim())) {
-        btn.classList.add("selected");
-      }
+      if (values.includes(btn.textContent.trim())) btn.classList.add("selected");
     });
   });
 }
@@ -1794,37 +1955,79 @@ document.querySelectorAll(".tag").forEach(btn => {
   });
 });
 
+function setImage(img, url) {
+  if (!img) return;
+  const clean = String(url || "").trim();
+  if (!clean) {
+    img.removeAttribute("src");
+    return;
+  }
+  img.src = clean;
+  img.onerror = () => img.removeAttribute("src");
+}
+
 async function loadCharacters() {
   const res = await fetch("/api/characters");
   characters = await res.json();
+  renderCharacterList();
+}
 
+function renderCharacterList() {
   const list = document.getElementById("characterList");
+  const query = document.getElementById("characterSearch")?.value.trim().toLowerCase() || "";
   list.innerHTML = "";
 
-  characters.forEach(c => {
-    const card = document.createElement("div");
+  const filtered = characters.filter(c => {
+    if (!query) return true;
+    return [c.name, c.intro, c._last_message, c.voice]
+      .some(value => String(value || "").toLowerCase().includes(query));
+  });
+
+  if (!filtered.length) {
+    const empty = document.createElement("div");
+    empty.className = "system-note";
+    empty.textContent = query ? "No matching chats." : "No characters yet.";
+    list.appendChild(empty);
+    return;
+  }
+
+  filtered.forEach(c => {
+    const card = document.createElement("button");
+    card.type = "button";
     card.className = "char-card" + (selectedCharacter?.id === c.id ? " active" : "");
     card.onclick = () => selectCharacter(c.id);
 
-    const avatar = c.profile_picture || "";
-    const last = c._last_message || c.intro || "";
+    const status = document.createElement("span");
+    status.className = "status-dot";
 
-    card.innerHTML = `
-      <img class="char-avatar" src="${escapeAttr(avatar)}" onerror="this.src='';">
-      <div>
-        <div class="char-name">${escapeHtml(c.name)}</div>
-        <div class="char-meta">${escapeHtml(last)}</div>
-        <span class="pill">${escapeHtml(c.voice || "Voice")}</span>
-      </div>
-    `;
+    const img = document.createElement("img");
+    img.className = "char-avatar";
+    img.alt = "";
+    setImage(img, c.profile_picture || "");
 
+    const copy = document.createElement("div");
+    copy.className = "char-copy";
+
+    const name = document.createElement("div");
+    name.className = "char-name";
+    name.textContent = c.name || "Unnamed";
+
+    const meta = document.createElement("div");
+    meta.className = "char-meta";
+    meta.textContent = c._last_message || c.intro || "No messages yet";
+
+    const voice = document.createElement("div");
+    voice.className = "char-voice";
+    voice.textContent = c.voice || "Voice";
+
+    copy.append(name, meta, voice);
+    card.append(status, img, copy);
     list.appendChild(card);
   });
 }
 
 function newCharacter() {
   selectedCharacter = null;
-
   document.getElementById("editorTitle").textContent = "Create Character";
   document.getElementById("name").value = "";
   document.getElementById("gender").value = "Female";
@@ -1834,25 +2037,27 @@ function newCharacter() {
   document.getElementById("core_memory").value = "";
   document.getElementById("dialogue_style").value = "";
   document.getElementById("voice").value = "Soft-spoken girl";
-
   setSelectedTags({});
 
   document.getElementById("chatTitle").textContent = "No character selected";
   document.getElementById("chatSub").textContent = "Create or choose a character.";
-  document.getElementById("avatar").src = "";
+  setImage(document.getElementById("avatar"), "");
   document.getElementById("messages").innerHTML = "";
 
-  document.body.classList.remove("focus-mode");
-  document.body.classList.remove("hide-editor");
-  clearMobilePanels();
-
-  loadCharacters();
+  document.body.classList.remove("focus-mode", "sidebar-hidden", "mobile-chats-open");
+  document.body.classList.add("editor-open");
+  renderCharacterList();
 }
 
 async function selectCharacter(id) {
   const res = await fetch("/api/characters/" + encodeURIComponent(id));
-  selectedCharacter = await res.json();
+  const data = await res.json();
+  if (!res.ok) {
+    alert(data.error || "Could not load character.");
+    return;
+  }
 
+  selectedCharacter = data;
   document.getElementById("editorTitle").textContent = "Update Character";
   document.getElementById("name").value = selectedCharacter.name || "";
   document.getElementById("gender").value = selectedCharacter.gender || "Unknown";
@@ -1862,22 +2067,19 @@ async function selectCharacter(id) {
   document.getElementById("core_memory").value = selectedCharacter.core_memory || "";
   document.getElementById("dialogue_style").value = selectedCharacter.dialogue_style || "";
   document.getElementById("voice").value = selectedCharacter.voice || "Soft-spoken girl";
-
   setSelectedTags(selectedCharacter.tags || {});
 
   document.getElementById("chatTitle").textContent = selectedCharacter.name;
   document.getElementById("chatSub").textContent = selectedCharacter.intro;
-  document.getElementById("avatar").src = selectedCharacter.profile_picture || "";
+  setImage(document.getElementById("avatar"), selectedCharacter.profile_picture || "");
 
-  clearMobilePanels();
-
+  document.body.classList.remove("mobile-chats-open");
   await loadCharacters();
   await loadHistory();
 }
 
 async function loadHistory() {
   const box = document.getElementById("messages");
-
   if (!selectedCharacter) {
     box.innerHTML = "";
     return;
@@ -1889,8 +2091,12 @@ async function loadHistory() {
   try {
     const res = await fetch(`/api/characters/${selectedCharacter.id}/history?limit=10000`);
     const history = await res.json();
-
     box.innerHTML = "";
+
+    if (!res.ok) {
+      addSystemNote(history.error || "Could not load history.");
+      return;
+    }
 
     if (!Array.isArray(history) || history.length === 0) {
       addSystemNote("No previous messages yet. This conversation will continue here.");
@@ -1906,10 +2112,7 @@ async function loadHistory() {
       );
     }
 
-    requestAnimationFrame(() => {
-      box.scrollTop = box.scrollHeight;
-    });
-
+    requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
   } catch (err) {
     box.innerHTML = "";
     addSystemNote("Could not load history: " + err.message);
@@ -1932,7 +2135,6 @@ async function saveCharacter() {
 
   const method = selectedCharacter ? "PUT" : "POST";
   const url = selectedCharacter ? `/api/characters/${selectedCharacter.id}` : "/api/characters";
-
   const res = await fetch(url, {
     method,
     headers: {"Content-Type": "application/json"},
@@ -1940,7 +2142,6 @@ async function saveCharacter() {
   });
 
   const data = await res.json();
-
   if (!res.ok) {
     alert(data.error || "Save failed.");
     return;
@@ -1949,6 +2150,7 @@ async function saveCharacter() {
   selectedCharacter = data;
   await loadCharacters();
   await selectCharacter(data.id);
+  closeEditor();
 }
 
 async function resetMemory() {
@@ -1956,11 +2158,7 @@ async function resetMemory() {
     alert("Select a character first.");
     return;
   }
-
-  if (!confirm("Reset active prompt memory? Full visible history will remain.")) {
-    return;
-  }
-
+  if (!confirm("Reset active prompt memory? Full visible history will remain.")) return;
   await fetch(`/api/characters/${selectedCharacter.id}/memory`, {method: "DELETE"});
   await loadHistory();
 }
@@ -1970,70 +2168,113 @@ async function deleteCharacter() {
     alert("Select a character first.");
     return;
   }
-
-  if (!confirm(`Delete ${selectedCharacter.name}, including memory and local history?`)) {
-    return;
-  }
-
+  if (!confirm(`Delete ${selectedCharacter.name}, including memory and local history?`)) return;
   await fetch(`/api/characters/${selectedCharacter.id}`, {method: "DELETE"});
-  newCharacter();
+  selectedCharacter = null;
+  closeEditor();
+  document.getElementById("chatTitle").textContent = "No character selected";
+  document.getElementById("chatSub").textContent = "Create or choose a character.";
+  setImage(document.getElementById("avatar"), "");
+  document.getElementById("messages").innerHTML = "";
   await loadCharacters();
 }
 
 function addSystemNote(text) {
   const box = document.getElementById("messages");
   const div = document.createElement("div");
-
   div.className = "system-note";
   div.textContent = text;
-
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
 }
 
+function makeBotAvatar() {
+  const img = document.createElement("img");
+  img.className = "message-avatar";
+  img.alt = "";
+  setImage(img, selectedCharacter?.profile_picture || "");
+  return img;
+}
+
+function makeUserAvatar() {
+  const div = document.createElement("div");
+  div.className = "message-avatar you-avatar";
+  div.textContent = "You";
+  div.setAttribute("aria-hidden", "true");
+  return div;
+}
+
 function addMessage(type, text, heartWhisper="", shouldScroll=true) {
   const box = document.getElementById("messages");
-  const div = document.createElement("div");
+  const row = document.createElement("div");
+  row.className = `message-row ${type === "user" ? "send" : "bot"}`;
 
-  div.className = `msg ${type}`;
+  const stack = document.createElement("div");
+  stack.className = "message-stack";
 
-  const content = document.createElement("div");
-  content.textContent = text;
-  div.appendChild(content);
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble";
+  bubble.textContent = text;
+  stack.appendChild(bubble);
 
   if (type === "bot") {
+    const actions = document.createElement("div");
+    actions.className = "message-actions";
+
     if (heartWhisper && heartWhisper.trim()) {
-      const whisper = document.createElement("div");
-      whisper.className = "heart-whisper";
+      const whisperText = heartWhisper.trim();
+      const whisperBtn = document.createElement("button");
+      whisperBtn.type = "button";
+      whisperBtn.className = "message-action-button heart-whisper-button";
+      whisperBtn.textContent = "♡ Heart Whisper";
+      whisperBtn.setAttribute("aria-expanded", "false");
+
+      const panel = document.createElement("div");
+      panel.className = "heart-whisper-panel";
+      panel.hidden = true;
 
       const label = document.createElement("span");
-      label.className = "heart-label";
-      label.textContent = "Heart whisper";
+      label.className = "heart-whisper-label";
+      label.textContent = "Private inner thought";
 
       const body = document.createElement("div");
-      body.textContent = heartWhisper.trim();
+      panel.append(label, body);
 
-      whisper.appendChild(label);
-      whisper.appendChild(body);
-      div.appendChild(whisper);
+      whisperBtn.onclick = () => {
+        const willOpen = panel.hidden;
+        panel.hidden = !willOpen;
+        whisperBtn.setAttribute("aria-expanded", String(willOpen));
+        whisperBtn.textContent = willOpen ? "♥ Hide Heart Whisper" : "♡ Heart Whisper";
+
+        if (willOpen) {
+          body.textContent = whisperText;
+          requestAnimationFrame(() => panel.scrollIntoView({block: "nearest", behavior: "smooth"}));
+        } else {
+          body.textContent = "";
+        }
+      };
+
+      actions.appendChild(whisperBtn);
+      stack.append(actions, panel);
+    } else {
+      stack.appendChild(actions);
     }
 
-    const actions = document.createElement("div");
-    actions.className = "actions";
-
     const voiceBtn = document.createElement("button");
-    voiceBtn.textContent = "Voice";
+    voiceBtn.type = "button";
+    voiceBtn.className = "message-action-button";
+    voiceBtn.textContent = "🔊 Voice";
     voiceBtn.onclick = () => playVoice(text);
 
     actions.appendChild(voiceBtn);
-    div.appendChild(actions);
+    row.append(makeBotAvatar(), stack);
+  } else {
+    row.append(stack, makeUserAvatar());
   }
 
-  box.appendChild(div);
-
-  if (shouldScroll) {
-    box.scrollTop = box.scrollHeight;
-  }
+  box.appendChild(row);
+  if (shouldScroll) box.scrollTop = box.scrollHeight;
+  return row;
 }
 
 function stripAction(text) {
@@ -2048,56 +2289,34 @@ async function sendMessage() {
 
   const input = document.getElementById("messageInput");
   const text = input.value.trim();
-
   if (!text) return;
-
   input.value = "";
 
   addMessage("user", text);
-  addMessage("bot", "*thinking quietly* ...");
+  const pending = addMessage("bot", "*thinking quietly* ...");
+  pending.dataset.pending = "true";
 
-  const res = await fetch(`/api/chat/${selectedCharacter.id}`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({message: text})
-  });
+  try {
+    const res = await fetch(`/api/chat/${selectedCharacter.id}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({message: text})
+    });
 
-  const data = await res.json();
+    const data = await res.json();
+    pending.remove();
 
-  const botMessages = document.querySelectorAll(".msg.bot");
-  const lastBot = botMessages[botMessages.length - 1];
+    if (!res.ok) {
+      addMessage("bot", "*the system flickers* " + (data.error || "Something went wrong."));
+      return;
+    }
 
-  if (lastBot) {
-    lastBot.remove();
+    addMessage("bot", data.reply, data.heart_whisper);
+    await loadCharacters();
+  } catch (err) {
+    pending.remove();
+    addMessage("bot", "*the system flickers* " + err.message);
   }
-
-  if (!res.ok) {
-    addMessage("bot", "*the system flickers* " + (data.error || "Something went wrong."));
-    return;
-  }
-
-  addMessage("bot", data.reply, data.heart_whisper);
-  await loadCharacters();
-}
-
-function escapeHtml(s) {
-  return String(s || "").replace(/[&<>"']/g, m => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#039;"
-  }[m]));
-}
-
-function escapeAttr(s) {
-  return String(s || "").replace(/[&<>"']/g, m => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#039;"
-  }[m]));
 }
 
 document.getElementById("messageInput").addEventListener("keydown", e => {
@@ -2107,7 +2326,14 @@ document.getElementById("messageInput").addEventListener("keydown", e => {
   }
 });
 
+document.getElementById("characterSearch").addEventListener("input", renderCharacterList);
+
 window.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    closeEditor();
+    document.body.classList.remove("mobile-chats-open");
+  }
+
   if (e.ctrlKey && e.key.toLowerCase() === "b") {
     e.preventDefault();
     toggleChats();
@@ -2122,13 +2348,24 @@ window.addEventListener("keydown", e => {
     e.preventDefault();
     toggleFocus();
   }
+
+  if (e.ctrlKey && e.key.toLowerCase() === "d") {
+    e.preventDefault();
+    toggleTheme();
+  }
 });
 
+window.addEventListener("resize", () => {
+  if (!isMobileLayout()) document.body.classList.remove("mobile-chats-open");
+});
+
+initTheme();
 loadConfig();
 loadCharacters();
 </script>
 </body>
 </html>
+
 """
 
 if __name__ == "__main__":
