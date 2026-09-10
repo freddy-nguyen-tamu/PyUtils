@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Comix Reader Controls</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Comix Reader</h1>
+
+    <label for="scrollSpeed">Up/Down scroll speed</label>
+    <div class="speed-row">
+      <input
+        id="scrollSpeed"
+        type="number"
+        min="50"
+        max="10000"
+        step="50"
+        inputmode="numeric"
+        aria-describedby="speedHelp"
+      >
+      <span>px/s</span>
+    </div>
+    <p id="speedHelp" class="help">Hold ↑ or ↓ to scroll continuously at this rate.</p>
+
+    <div class="shortcuts" aria-label="Keyboard shortcuts">
+      <div><kbd>←</kbd><span>Previous chapter</span></div>
+      <div><kbd>→</kbd><span>Next chapter</span></div>
+      <div><kbd>↑</kbd><kbd>↓</kbd><span>Custom-speed scroll</span></div>
+    </div>
+
+    <p class="zoom-note">Browser zoom changes reader width. Reader buttons auto-hide and reappear when your mouse enters the right-most 1/4 of the page.</p>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
