@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Parallel Paradise Arrow Reader",
+  "version": "1.0.0",
+  "description": "Hold Up/Down for adjustable smooth scrolling and use Left/Right for previous/next chapters.",
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "Arrow Reader Speed",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://parallelparadise.online/*",
+        "https://*.parallelparadise.online/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

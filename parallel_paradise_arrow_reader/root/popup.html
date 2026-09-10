@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arrow Reader Speed</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Arrow Reader</h1>
+    <label for="speed">Scroll speed</label>
+    <div class="speed-row">
+      <input id="speed" type="number" min="50" max="3000" step="10" inputmode="numeric">
+      <span>px/sec</span>
+    </div>
+    <input id="speedSlider" type="range" min="50" max="3000" step="10" aria-label="Scroll speed slider">
+    <p id="status" aria-live="polite">Changes save automatically.</p>
+    <div class="keys">
+      <div><kbd>↑</kbd><kbd>↓</kbd><span>Hold to scroll</span></div>
+      <div><kbd>←</kbd><kbd>→</kbd><span>Previous / next chapter</span></div>
+    </div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
