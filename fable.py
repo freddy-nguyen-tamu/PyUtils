@@ -1739,7 +1739,7 @@ INDEX_HTML = r"""
       overflow-y: auto;
       overflow-x: hidden;
       padding: 22px 18px 18px;
-      scroll-behavior: smooth;
+      scroll-behavior: auto;
       scrollbar-width: thin;
     }
 
@@ -2818,6 +2818,7 @@ function addMessage(type, text, heartWhisper="", shouldScroll=true, messageId=nu
       const editBtn = document.createElement("button");
       editBtn.type = "button";
       editBtn.className = "message-action-button";
+      editBtn.dataset.action = "edit-message";
       editBtn.textContent = "✎ Edit";
       editBtn.onclick = () => beginEditMessage(row, bubble, actions, messageId, text);
       actions.appendChild(editBtn);
@@ -2830,6 +2831,28 @@ function addMessage(type, text, heartWhisper="", shouldScroll=true, messageId=nu
   box.appendChild(row);
   if (shouldScroll) box.scrollTop = box.scrollHeight;
   return row;
+}
+
+function enableUserMessageEditing(row, messageId, text) {
+  if (!row || !messageId) return;
+
+  row.dataset.messageId = messageId;
+  const bubble = row.querySelector(".message-bubble");
+  const actions = row.querySelector(".message-actions");
+  if (!bubble || !actions) return;
+
+  // A freshly sent bubble is rendered before the server has assigned its durable ID.
+  // Once /api/chat returns, attach the edit control in place instead of reloading the
+  // entire history (which used to reset the scroll position and cause the jump).
+  if (actions.querySelector("[data-action='edit-message']")) return;
+
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "message-action-button";
+  editBtn.dataset.action = "edit-message";
+  editBtn.textContent = "✎ Edit";
+  editBtn.onclick = () => beginEditMessage(row, bubble, actions, messageId, text);
+  actions.appendChild(editBtn);
 }
 
 function beginEditMessage(row, bubble, actions, messageId, originalText) {
@@ -2950,9 +2973,12 @@ async function sendMessage() {
       return;
     }
 
-    // Reload from durable history so the new user bubble immediately receives its stable
-    // editable message ID and all controls exactly match what is on disk.
-    await loadHistory();
+    // The API already returns stable IDs for both durable history rows. Keep the existing
+    // DOM in place instead of reloading the entire conversation: rebuilding #messages
+    // reset scrollTop and, combined with smooth scrolling, caused the visible jump-to-top
+    // followed by a long animated scroll back to the bottom on every send.
+    enableUserMessageEditing(userRow, data.user_message_id, text);
+    addMessage("bot", data.reply || "...", data.heart_whisper || "", true, data.assistant_message_id || null);
     await loadCharacters();
   } catch (err) {
     pending.remove();
