@@ -85,7 +85,7 @@ class PuzzleMerger(tk.Tk):
         ttk.Button(toolbar, text="Zoom +", command=lambda: self.set_zoom(self.zoom * 1.25)).pack(
             side=tk.LEFT, padx=(0, 12)
         )
-        ttk.Button(toolbar, text="Clear", command=self.clear_workspace).pack(
+        ttk.Button(toolbar, text="Restart", command=self.restart_workspace).pack(
             side=tk.LEFT, padx=(0, 12)
         )
 
@@ -129,6 +129,7 @@ class PuzzleMerger(tk.Tk):
         self.bind("<Control-o>", lambda _e: self.load_images())
         self.bind("<Control-s>", lambda _e: self.save_merged())
         self.bind("<Control-0>", lambda _e: self.fit_view())
+        self.bind("<Control-r>", lambda _e: self.restart_workspace())
 
     def load_images(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -202,9 +203,36 @@ class PuzzleMerger(tk.Tk):
     def clear_workspace(self) -> None:
         self.pieces.clear()
         self.id_to_piece.clear()
+        self.drag_piece = None
+        self.drag_start_mouse = (0.0, 0.0)
+        self.drag_start_piece = (0, 0)
+        self.zoom = 1.0
         self.canvas.delete("all")
         self.canvas.configure(scrollregion=(0, 0, 1, 1))
+        self.canvas.xview_moveto(0)
+        self.canvas.yview_moveto(0)
         self.status.set("Workspace cleared.")
+
+    def restart_workspace(self) -> None:
+        """Forget the current assembly without deleting or trashing source files."""
+        self.clear_workspace()
+        self.status.set("Restarted. Load images to begin a new assembly.")
+
+    def default_output_filename(self) -> str:
+        """Build name1+name2+etc.png from the image filenames in the layout."""
+        stems = [piece.path.stem for piece in self.pieces]
+        joined = "+".join(stems) if stems else "merged"
+
+        # Keep the suggested filename valid on Windows while preserving '+' separators.
+        invalid = '<>:"/\\|?*'
+        translation = str.maketrans({char: "_" for char in invalid})
+        joined = joined.translate(translation).strip(" .") or "merged"
+
+        # Leave room for the extension and avoid impractically long filename components.
+        if len(joined) > 220:
+            joined = joined[:220].rstrip(" .+") or "merged"
+
+        return f"{joined}.png"
 
     def set_zoom(self, new_zoom: float) -> None:
         self.zoom = max(0.05, min(4.0, float(new_zoom)))
@@ -331,63 +359,140 @@ class PuzzleMerger(tk.Tk):
             self.status.set("Only one image is loaded; add another image to use snapping.")
             return
 
-        target = min(others, key=lambda p: self.rectangle_distance(piece, p))
-        snapped_x, snapped_y, side = self.best_snap(piece, target)
+        snapped_x, snapped_y, side, target = self.best_snap_to_any(piece, others)
         piece.x = snapped_x
         piece.y = snapped_y
 
         if piece.canvas_id is not None:
             self.canvas.coords(piece.canvas_id, piece.x * self.zoom, piece.y * self.zoom)
         self.update_scrollregion()
-        self.status.set(f"Snapped {piece.path.name} to the {side} of {target.path.name}.")
+        self.status.set(
+            f"Snapped {piece.path.name} side-to-side on the {side} of {target.path.name}."
+        )
 
-    def best_snap(self, piece: Piece, target: Piece) -> tuple[int, int, str]:
+    def best_snap_to_any(
+        self, piece: Piece, others: list[Piece]
+    ) -> tuple[int, int, str, Piece]:
+        """Choose the best side-to-side snap against every nearby image.
+
+        The old snapper only required a tiny amount of shared edge, which meant a sloppy
+        drop could remain visibly offset.  Here every candidate first maximizes the length
+        of the touching sides.  Among those full-edge-contact candidates, the position
+        requiring the smallest correction from the user's drop wins.
+        """
         dropped_x, dropped_y = piece.x, piece.y
 
-        # Preserve the user's orthogonal placement as much as possible, but clamp it
-        # so the two touching edges actually share some length. This makes sloppy drops
-        # still "catch" the nearby piece instead of touching only at an irrelevant point.
-        y_for_horizontal = self.clamp_for_edge_overlap(
-            dropped_y, piece.height, target.y, target.height
-        )
-        x_for_vertical = self.clamp_for_edge_overlap(
-            dropped_x, piece.width, target.x, target.width
-        )
+        # (collision flag, correction distance, collision area, target gap,
+        #  negative shared-edge length, x, y, side, target)
+        scored: list[tuple[int, float, int, float, int, int, int, str, Piece]] = []
 
-        candidates = [
-            (target.x + target.width, y_for_horizontal, "east"),
-            (target.x - piece.width, y_for_horizontal, "west"),
-            (x_for_vertical, target.y + target.height, "south"),
-            (x_for_vertical, target.y - piece.height, "north"),
-        ]
-
-        scored: list[tuple[int, float, int, int, int, str]] = []
-        for x, y, side in candidates:
-            overlap = sum(
-                self.overlap_area_at(piece, x, y, other)
-                for other in self.pieces
-                if other is not piece and other is not target
+        for target in others:
+            # For east/west placement, maximize vertical side contact.
+            y_for_horizontal = self.position_for_max_side_overlap(
+                dropped_y, piece.height, target.y, target.height
             )
-            move_distance = math.hypot(x - dropped_x, y - dropped_y)
-            # Valid (non-overlapping) candidates always beat colliding candidates.
-            scored.append((0 if overlap == 0 else 1, move_distance, overlap, x, y, side))
+            shared_vertical = self.interval_overlap_length(
+                y_for_horizontal,
+                y_for_horizontal + piece.height,
+                target.y,
+                target.y + target.height,
+            )
 
-        scored.sort(key=lambda s: (s[0], s[1] if s[0] == 0 else s[2], s[1]))
-        _, _, _, x, y, side = scored[0]
-        return x, y, side
+            # For north/south placement, maximize horizontal side contact.
+            x_for_vertical = self.position_for_max_side_overlap(
+                dropped_x, piece.width, target.x, target.width
+            )
+            shared_horizontal = self.interval_overlap_length(
+                x_for_vertical,
+                x_for_vertical + piece.width,
+                target.x,
+                target.x + target.width,
+            )
+
+            candidates = [
+                (
+                    target.x + target.width,
+                    y_for_horizontal,
+                    "east",
+                    shared_vertical,
+                ),
+                (
+                    target.x - piece.width,
+                    y_for_horizontal,
+                    "west",
+                    shared_vertical,
+                ),
+                (
+                    x_for_vertical,
+                    target.y + target.height,
+                    "south",
+                    shared_horizontal,
+                ),
+                (
+                    x_for_vertical,
+                    target.y - piece.height,
+                    "north",
+                    shared_horizontal,
+                ),
+            ]
+
+            target_gap = self.rectangle_distance(piece, target)
+
+            for x, y, side, shared_edge in candidates:
+                collision_area = sum(
+                    self.overlap_area_at(piece, x, y, other)
+                    for other in self.pieces
+                    if other is not piece and other is not target
+                )
+                correction = math.hypot(x - dropped_x, y - dropped_y)
+
+                # Collision-free snaps beat colliding snaps.  Within that group, the
+                # user's approximate drop direction/position is respected by choosing
+                # the smallest correction.  Longer shared edges break close ties.
+                scored.append(
+                    (
+                        0 if collision_area == 0 else 1,
+                        correction,
+                        collision_area,
+                        target_gap,
+                        -shared_edge,
+                        x,
+                        y,
+                        side,
+                        target,
+                    )
+                )
+
+        scored.sort(key=lambda s: (s[0], s[1], s[2], s[3], s[4]))
+        _, _, _, _, _, x, y, side, target = scored[0]
+        return x, y, side, target
 
     @staticmethod
-    def clamp_for_edge_overlap(
+    def position_for_max_side_overlap(
         moving_pos: int,
         moving_size: int,
         target_pos: int,
         target_size: int,
     ) -> int:
-        # Require at least a small shared edge. For small images, reduce the requirement.
-        required = max(1, min(24, moving_size // 3, target_size // 3))
-        low = target_pos - moving_size + required
-        high = target_pos + target_size - required
+        """Return the closest position that gives maximum possible side overlap.
+
+        If the moving side is shorter, it is kept completely inside the target side.
+        If it is longer, the target side is kept completely inside the moving side.
+        In either case the entire shorter side touches, rather than allowing a tiny
+        partial-edge connection.
+        """
+        if moving_size <= target_size:
+            low = target_pos
+            high = target_pos + target_size - moving_size
+        else:
+            low = target_pos + target_size - moving_size
+            high = target_pos
+
         return min(max(moving_pos, low), high)
+
+    @staticmethod
+    def interval_overlap_length(a0: int, a1: int, b0: int, b1: int) -> int:
+        return max(0, min(a1, b1) - max(a0, b0))
 
     @staticmethod
     def rectangle_distance(a: Piece, b: Piece) -> float:
@@ -448,6 +553,7 @@ class PuzzleMerger(tk.Tk):
 
         output = filedialog.asksaveasfilename(
             title="Save merged image",
+            initialfile=self.default_output_filename(),
             defaultextension=".png",
             filetypes=[
                 ("PNG image", "*.png"),
