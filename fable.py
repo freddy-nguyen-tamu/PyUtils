@@ -33,6 +33,17 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Fish Audio S2.1 Pro is the preferred human-like TTS provider.
+# Create a free API key at https://fish.audio/app/api-keys/ and put it in .env:
+# FISH_API_KEY=...
+FISH_API_KEY = os.getenv("FISH_API_KEY", "").strip()
+FISH_TTS_MODEL = os.getenv("FISH_TTS_MODEL", "s2.1-pro-free").strip() or "s2.1-pro-free"
+FISH_TTS_API_URL = "https://api.fish.audio/v1/tts"
+FISH_MODEL_API_URL = "https://api.fish.audio/model"
+FISH_VOICE_PAGE_SIZE = 50
+FISH_VOICE_CACHE_SECONDS = 300
+_FISH_VOICE_CACHE = {"loaded_at": 0.0, "voices": []}
+
 MAX_RECENT_MESSAGES_IN_PROMPT = 10
 SUMMARY_TRIGGER_MESSAGES = 18
 RECENT_MESSAGES_AFTER_SUMMARY = 8
@@ -80,6 +91,15 @@ def write_json(path: Path, data):
 def append_jsonl(path: Path, item):
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
+def write_jsonl(path: Path, items):
+    """Atomically replace a JSONL file with exactly these rows."""
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
+        for item in items:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    tmp_path.replace(path)
 
 
 def read_jsonl(path: Path, limit=None):
@@ -133,7 +153,14 @@ def normalize_character(raw):
         tags = {}
 
     dialogue_style = str(raw.get("dialogue_style") or "").strip()[:3000]
-    voice = str(raw.get("voice") or "Soft-spoken girl").strip()[:80]
+
+    # voice is kept as the human-readable display name for backward compatibility.
+    voice_name = str(raw.get("voice_name") or raw.get("voice") or "Soft-spoken girl").strip()[:160]
+    voice_provider = str(raw.get("voice_provider") or "edge").strip().lower()[:20]
+    if voice_provider not in ("fish", "edge"):
+        voice_provider = "edge"
+    voice_id = str(raw.get("voice_id") or raw.get("voice") or "Soft-spoken girl").strip()[:200]
+
     core_memory = str(raw.get("core_memory") or "").strip()[:2500]
 
     return {
@@ -150,7 +177,10 @@ def normalize_character(raw):
             "story": list(tags.get("story") or []),
         },
         "dialogue_style": dialogue_style,
-        "voice": voice,
+        "voice": voice_name,
+        "voice_name": voice_name,
+        "voice_provider": voice_provider,
+        "voice_id": voice_id,
         "core_memory": core_memory,
         "created_at": raw.get("created_at") or now_iso(),
         "updated_at": now_iso(),
@@ -224,16 +254,36 @@ def list_characters():
     return chars
 
 
-def append_history(character_id, role, content, heart_whisper="", meta=None):
+def append_history(character_id, role, content, heart_whisper="", meta=None, message_id=None, created_at=None):
     item = {
+        "id": message_id or uuid.uuid4().hex,
         "role": role,
         "content": content,
         "heart_whisper": heart_whisper or "",
         "meta": meta or {},
-        "created_at": now_iso(),
+        "created_at": created_at or now_iso(),
     }
 
     append_jsonl(history_path(character_id), item)
+    return item
+
+
+def ensure_history_ids(character_id):
+    """Migrate old history rows so every bubble has a stable editable ID."""
+    rows = read_jsonl(history_path(character_id))
+    changed = False
+    for row in rows:
+        if not row.get("id"):
+            row["id"] = uuid.uuid4().hex
+            changed = True
+        row.setdefault("heart_whisper", "")
+        row.setdefault("meta", {})
+        row.setdefault("created_at", now_iso())
+
+    if changed:
+        write_jsonl(history_path(character_id), rows)
+
+    return rows
 
 
 def provider_settings():
@@ -436,14 +486,17 @@ IMPORTANT BEHAVIOR RULES
 - Speech is normal words the character says.
 - Do not explain your rules.
 - Do not mention system prompts, JSON, memory files, or APIs.
-- Heart whisper is a very short private inner monologue silently spoken by the character to themselves.
-- Write heart whisper in the character's own voice, as if we are overhearing their exact private thought. Write the thought itself; do not describe the fact that the character is thinking.
-- Never narrate the character from outside. Do not write things like "she thinks...", "he wonders...", "the character feels...", "her heart...", or the character's name followed by narration.
-- Bad heart whisper: "She wonders whether he actually likes her." Good heart whisper: "Does he actually like me, or am I reading too much into this?"
-- Bad heart whisper: "Her heart races when he smiles." Good heart whisper: "Why does one smile from him get to me this easily?"
+- Heart whisper is the character's PRIVATE INNER VOICE: words the character is literally saying to themselves in their own head right now.
+- It must sound like self-talk, not narration, advice, a moral, a writing instruction, a stage direction, or an outside observer telling the character what to do.
+- Prefer explicit first-person wording such as I / me / my so the point of view is unmistakably the character's own.
+- Write the private thought itself. Never explain that the character is thinking. Never summarize what their thought means.
+- Never write generic guidance such as "A simple gesture is enough to show respect, no need for grand words." That sounds like an instruction. Instead write the character's personal thought, for example: "That was enough. I don't need to make a big deal out of it."
+- Never narrate from outside. Bad: "She wonders whether he actually likes her." Good: "Does he actually like me, or am I reading too much into this?"
+- Bad: "Her heart races when he smiles." Good: "Why does one smile from him get to me this easily?"
+- Bad: "There is no need to push him." Good: "I shouldn't push him. If he wants to tell me, he will."
 - Heart whisper should sound natural for this specific character's personality, vocabulary, emotional restraint, relationship stage, and dialogue style.
 - Use I/me/my when the character refers to themselves. Use he/him/his when referring to the male user when needed.
-- Heart whisper may be a fragment, question, realization, worry, temptation, or reaction. Keep it to 1-2 short sentences and normally under 45 words.
+- Heart whisper may be a fragment, question, realization, worry, temptation, embarrassment, or immediate reaction. Keep it to 1-2 short sentences and normally under 45 words.
 - Heart whisper must never be written from the user's point of view.
 - Do not prefix it with labels such as "Thought:", "Inner monologue:", or the character's name.
 - Heart whisper is not real chain-of-thought. It is only a short fictional in-character inner feeling or thought.
@@ -491,7 +544,7 @@ def repair_character_json(raw_text):
         pass
 
     repair_messages = [
-        {"role": "system", "content": "Convert the text into valid JSON only. Keep heart_whisper as a short first-person in-character inner monologue, never third-person narration about the character."},
+        {"role": "system", "content": "Convert the text into valid JSON only. heart_whisper must be literal private self-talk in the character's own first-person inner voice (prefer I/me/my), never narration, generic advice, a moral, or instructions directed at the character."},
         {"role": "user", "content": f"""
 Make this into valid JSON with keys:
 action, speech, heart_whisper, memory_update.
@@ -527,12 +580,13 @@ def format_assistant_visible(obj):
 def fix_heart_whisper(obj, character=None):
     heart = str(obj.get("heart_whisper") or "").strip()
 
-    fallback = "Why am I this curious about him? I should probably keep that to myself."
+    # This fallback is deliberately unmistakable first-person self-talk.
+    fallback = "I need to keep that reaction to myself. Why am I letting him get to me this much?"
 
     if not heart:
         heart = fallback
 
-    # Strip common model-added labels so the result reads like a raw private thought.
+    # Strip common model-added labels so the result reads like the raw private thought itself.
     heart = re.sub(
         r"^(?:heart\s*whisper|inner\s*(?:thought|monologue)|thought)\s*:\s*",
         "",
@@ -543,22 +597,19 @@ def fix_heart_whisper(obj, character=None):
     lower = heart.lower()
     character_name = str((character or {}).get("name") or "").strip().lower()
 
-    # Reject obvious outside-narrator constructions. The prompt should prevent these,
-    # but this fallback keeps malformed generations from surfacing in the UI.
     narrator_starts = (
-        "she thinks ",
-        "she wonders ",
-        "she feels ",
-        "she realizes ",
-        "she notices ",
-        "he thinks to himself ",
-        "he wonders to himself ",
-        "he feels to himself ",
-        "the character thinks ",
-        "the character wonders ",
-        "the character feels ",
-        "her heart ",
-        "his heart ",
+        "she thinks ", "she wonders ", "she feels ", "she realizes ", "she notices ",
+        "he thinks ", "he wonders ", "he feels ", "he realizes ", "he notices ",
+        "they think ", "they wonder ", "they feel ", "they realize ", "they notice ",
+        "the character thinks ", "the character wonders ", "the character feels ",
+        "her heart ", "his heart ", "their heart ",
+    )
+
+    generic_instruction_starts = (
+        "a simple ", "a good ", "a little ", "the best ", "the right ",
+        "one should ", "one must ", "it is important ", "it's important ",
+        "there is no need ", "there's no need ", "no need to ",
+        "remember to ", "always ", "never ", "you should ", "you need to ",
     )
 
     named_narration = False
@@ -572,13 +623,28 @@ def fix_heart_whisper(obj, character=None):
     pronoun_narration = False
     if gender == "female" and re.match(r"^(?:she|her)\b", lower):
         pronoun_narration = True
+    elif gender == "male" and re.match(r"^(?:he|his)\b", lower):
+        pronoun_narration = True
     elif gender in ("non-binary", "nonbinary") and re.match(r"^(?:they|their)\b", lower):
         pronoun_narration = True
 
-    if lower.startswith(narrator_starts) or named_narration or pronoun_narration:
+    # Require clear inner-self perspective for normal-length thoughts. Very short reactions
+    # such as "Seriously?" are allowed even without an explicit I/me/my token.
+    has_first_person = bool(re.search(r"\b(?:i(?:['’](?:m|ve|ll|d))?|me|my|mine|myself)\b", lower))
+    word_count = len(re.findall(r"\b\w+[’']?\w*\b", heart))
+    short_reaction = word_count <= 5 and any(ch in heart for ch in "?!")
+
+    invalid = (
+        lower.startswith(narrator_starts)
+        or lower.startswith(generic_instruction_starts)
+        or named_narration
+        or pronoun_narration
+        or (not has_first_person and not short_reaction)
+    )
+
+    if invalid:
         heart = fallback
 
-    # Keep the private thought compact enough to feel like an instant internal reaction.
     heart = re.sub(r"\s+", " ", heart).strip()
     return heart[:500]
 
@@ -682,6 +748,123 @@ Return the updated concise chat memory summary.
     return memory
 
 
+def rebuild_memory_from_history(character, history_rows):
+    """
+    Rebuild prompt memory ONLY from the retained timeline.
+
+    This is the critical branch-safety step used after editing a user bubble. It never
+    reuses the old summary or remembered facts, because those may contain information
+    from the deleted future.
+    """
+    memory = default_memory(character["id"])
+    usable = [
+        row for row in history_rows
+        if row.get("role") in ("user", "assistant") and str(row.get("content") or "").strip()
+    ]
+
+    if not usable:
+        return memory
+
+    recent = usable[-RECENT_MESSAGES_AFTER_SUMMARY:]
+    memory["recent_messages"] = [
+        {
+            "role": row.get("role"),
+            "content": str(row.get("content") or ""),
+            "heart_whisper": str(row.get("heart_whisper") or ""),
+            "created_at": row.get("created_at") or now_iso(),
+        }
+        for row in recent
+    ]
+
+    older = usable[:-RECENT_MESSAGES_AFTER_SUMMARY]
+    if not older:
+        return memory
+
+    # One bounded rebuild call keeps branching practical even for very long histories.
+    # We keep the most recent retained material because it is the most relevant context.
+    rebuild_rows = older[-220:]
+    transcript = "\n".join(
+        f"{row.get('role')}: {row.get('content')}"
+        for row in rebuild_rows
+    )[-60000:]
+
+    prompt = [
+        {
+            "role": "system",
+            "content": """
+Rebuild roleplay memory from the supplied retained timeline only.
+Return valid JSON with keys summary and facts.
+- Never infer or mention anything that is not present in this retained timeline.
+- summary: concise continuity, relationship progress, promises, emotional changes, and ongoing plot.
+- facts: stable facts worth remembering about the male user, his preferences/name, promises, relationship milestones, and ongoing plot details.
+- Do not copy or summarize the permanent core character profile.
+- Do not include disposable small talk.
+""".strip(),
+        },
+        {
+            "role": "user",
+            "content": f"""
+Permanent character profile for reference only; do not summarize it:
+{core_character_text(character)}
+
+RETAINED TIMELINE ONLY:
+{transcript}
+
+Return JSON only.
+""".strip(),
+        },
+    ]
+
+    try:
+        rebuilt = extract_json(chat_completion(
+            prompt,
+            temperature=0.15,
+            max_tokens=700,
+            json_mode=True,
+        ))
+        memory["summary"] = str(rebuilt.get("summary") or "").strip()[:7000]
+        facts = rebuilt.get("facts") or []
+        if isinstance(facts, list):
+            memory["facts"] = dedupe_facts(facts)
+    except Exception:
+        # Failing closed is safer than reusing contaminated pre-branch memory.
+        memory["summary"] = ""
+        memory["facts"] = []
+
+    return memory
+
+
+def generate_character_turn(character, memory, user_message):
+    messages = build_messages(character, memory, user_message)
+    raw_reply = chat_completion(
+        messages,
+        temperature=0.9,
+        max_tokens=650,
+        json_mode=True,
+    )
+    obj = repair_character_json(raw_reply)
+    visible = format_assistant_visible(obj)
+    heart_whisper = fix_heart_whisper(obj, character)
+    memory_update = obj.get("memory_update") or []
+    if not isinstance(memory_update, list):
+        memory_update = []
+    return obj, visible, heart_whisper, memory_update
+
+
+def apply_turn_to_memory(character, memory, user_message, visible, heart_whisper, memory_update):
+    add_recent_message(memory, "user", user_message)
+    add_recent_message(memory, "assistant", visible, heart_whisper=heart_whisper)
+
+    facts = memory.get("facts", [])
+    for fact in memory_update:
+        fact = str(fact or "").strip()
+        if fact:
+            facts.append(fact)
+    memory["facts"] = dedupe_facts(facts)
+
+    return maybe_summarize_memory(character, memory)
+
+
 def edge_voice_for_style(style: str):
     s = (style or "").lower()
 
@@ -754,6 +937,96 @@ async def make_edge_tts_mp3(text: str, voice_style: str):
     return data
 
 
+def edge_voice_catalog():
+    return [
+        {"provider": "edge", "id": name, "name": name, "description": "Legacy local compatibility voice"}
+        for name in (
+            "Flirting Lady", "Mature sister", "Sweet girl", "Soft-spoken girl",
+            "Hoarse-voiced girl", "Elegant lady", "Mean girl", "Brainy girl",
+            "Mysterious lady", "Deep male", "Calm male", "Energetic male",
+        )
+    ]
+
+
+def list_fish_voices(force=False):
+    if not FISH_API_KEY:
+        return []
+
+    now = time.time()
+    cached = _FISH_VOICE_CACHE.get("voices") or []
+    if cached and not force and now - float(_FISH_VOICE_CACHE.get("loaded_at") or 0) < FISH_VOICE_CACHE_SECONDS:
+        return cached
+
+    resp = requests.get(
+        FISH_MODEL_API_URL,
+        headers={"Authorization": f"Bearer {FISH_API_KEY}"},
+        params={
+            "page_size": FISH_VOICE_PAGE_SIZE,
+            "page_number": 1,
+            "sort_by": "score",
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Fish voice list error {resp.status_code}: {resp.text[:500]}")
+
+    items = resp.json().get("items") or []
+    voices = []
+    seen = set()
+    for item in items:
+        voice_id = str(item.get("_id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not voice_id or not title or voice_id in seen:
+            continue
+        seen.add(voice_id)
+        languages = item.get("languages") or []
+        description = str(item.get("description") or "").strip()
+        if languages:
+            language_text = ", ".join(map(str, languages[:4]))
+            description = (description + (" · " if description else "") + language_text)[:240]
+        voices.append({
+            "provider": "fish",
+            "id": voice_id,
+            "name": title[:160],
+            "description": description,
+        })
+
+    _FISH_VOICE_CACHE["loaded_at"] = now
+    _FISH_VOICE_CACHE["voices"] = voices
+    return voices
+
+
+def make_fish_tts_mp3(text: str, reference_id: str):
+    if not FISH_API_KEY:
+        raise RuntimeError(
+            "FISH_API_KEY is missing. Create a free Fish Audio API key and add FISH_API_KEY=... to your .env file."
+        )
+
+    payload = {
+        "text": text,
+        "format": "mp3",
+        "temperature": 0.8,
+        "top_p": 0.8,
+        "prosody": {"speed": 1.0, "volume": 0, "normalize_loudness": True},
+    }
+    if reference_id:
+        payload["reference_id"] = reference_id
+
+    resp = requests.post(
+        FISH_TTS_API_URL,
+        headers={
+            "Authorization": f"Bearer {FISH_API_KEY}",
+            "Content-Type": "application/json",
+            "model": FISH_TTS_MODEL,
+        },
+        json=payload,
+        timeout=120,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Fish TTS error {resp.status_code}: {resp.text[:700]}")
+    return resp.content
+
+
 @app.route("/")
 def index():
     return Response(INDEX_HTML, mimetype="text/html")
@@ -764,6 +1037,9 @@ def api_config():
     return jsonify({
         "provider": CHAT_PROVIDER,
         "model": OPENROUTER_MODEL if CHAT_PROVIDER == "openrouter" else groq_display_model(),
+        "tts_provider": "fish" if FISH_API_KEY else "edge",
+        "tts_model": FISH_TTS_MODEL if FISH_API_KEY else "edge-tts fallback",
+        "fish_ready": bool(FISH_API_KEY),
     })
 
 
@@ -879,7 +1155,8 @@ def api_get_history(character_id):
         limit = 2000
 
     limit = max(1, min(limit, 10000))
-    return jsonify(read_jsonl(history_path(character_id), limit=limit))
+    rows = ensure_history_ids(character_id)
+    return jsonify(rows[-limit:])
 
 
 @app.route("/api/chat/<character_id>", methods=["POST"])
@@ -896,40 +1173,20 @@ def api_chat(character_id):
         return jsonify({"error": "Message is empty."}), 400
 
     memory = load_memory(character_id)
-    messages = build_messages(character, memory, user_message)
 
     try:
-        raw_reply = chat_completion(
-            messages,
-            temperature=0.9,
-            max_tokens=650,
-            json_mode=True,
+        obj, visible, heart_whisper, memory_update = generate_character_turn(
+            character, memory, user_message
         )
 
-        obj = repair_character_json(raw_reply)
+        memory = apply_turn_to_memory(
+            character, memory, user_message, visible, heart_whisper, memory_update
+        )
 
-        visible = format_assistant_visible(obj)
-        heart_whisper = fix_heart_whisper(obj, character)
-        memory_update = obj.get("memory_update") or []
-
-        add_recent_message(memory, "user", user_message)
-        add_recent_message(memory, "assistant", visible, heart_whisper=heart_whisper)
-
-        append_history(character_id, "user", user_message)
-        append_history(character_id, "assistant", visible, heart_whisper=heart_whisper)
-
-        if isinstance(memory_update, list):
-            facts = memory.get("facts", [])
-
-            for fact in memory_update:
-                fact = str(fact or "").strip()
-
-                if fact:
-                    facts.append(fact)
-
-            memory["facts"] = dedupe_facts(facts)
-
-        memory = maybe_summarize_memory(character, memory)
+        user_item = append_history(character_id, "user", user_message)
+        assistant_item = append_history(
+            character_id, "assistant", visible, heart_whisper=heart_whisper
+        )
         save_memory(character_id, memory)
 
         return jsonify({
@@ -938,10 +1195,135 @@ def api_chat(character_id):
             "speech": obj.get("speech", ""),
             "heart_whisper": heart_whisper,
             "memory_update": memory_update,
+            "user_message_id": user_item["id"],
+            "assistant_message_id": assistant_item["id"],
         })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/characters/<character_id>/messages/<message_id>", methods=["PUT"])
+def api_edit_user_message(character_id, message_id):
+    """Edit one user bubble, erase the old future, and regenerate from that branch point."""
+    character = load_character(character_id)
+    if not character:
+        return jsonify({"error": "Character not found."}), 404
+
+    raw = request.get_json(force=True)
+    new_content = str(raw.get("content") or "").strip()
+    if not new_content:
+        return jsonify({"error": "Edited message cannot be empty."}), 400
+    if len(new_content) > 12000:
+        return jsonify({"error": "Edited message is too long."}), 400
+
+    rows = ensure_history_ids(character_id)
+    target_index = next((i for i, row in enumerate(rows) if row.get("id") == message_id), None)
+    if target_index is None:
+        return jsonify({"error": "Message not found."}), 404
+
+    target = rows[target_index]
+    if target.get("role") != "user":
+        return jsonify({"error": "Only your own chat bubbles can be edited."}), 400
+
+    retained_before = rows[:target_index]
+
+    try:
+        # Rebuild from retained history only. Nothing from rows after the edited bubble is
+        # consulted for the replacement response or the replacement memory.
+        branch_memory = rebuild_memory_from_history(character, retained_before)
+        obj, visible, heart_whisper, memory_update = generate_character_turn(
+            character, branch_memory, new_content
+        )
+        branch_memory = apply_turn_to_memory(
+            character, branch_memory, new_content, visible, heart_whisper, memory_update
+        )
+
+        edited_user = {
+            "id": target["id"],
+            "role": "user",
+            "content": new_content,
+            "heart_whisper": "",
+            "meta": {
+                **(target.get("meta") or {}),
+                "edited": True,
+                "edited_at": now_iso(),
+                "branched_timeline": True,
+            },
+            "created_at": target.get("created_at") or now_iso(),
+        }
+        replacement_assistant = {
+            "id": uuid.uuid4().hex,
+            "role": "assistant",
+            "content": visible,
+            "heart_whisper": heart_whisper,
+            "meta": {"generated_after_edit": True, "branch_from": target["id"]},
+            "created_at": now_iso(),
+        }
+
+        new_rows = retained_before + [edited_user, replacement_assistant]
+        deleted_count = len(rows) - target_index - 1
+
+        # Commit history and memory only after replacement generation succeeds. If a
+        # filesystem write fails, restore the pre-edit files so there is no half-branch.
+        old_memory_file = memory_path(character_id)
+        old_memory_existed = old_memory_file.exists()
+        old_memory_data = read_json(old_memory_file, None) if old_memory_existed else None
+        try:
+            write_jsonl(history_path(character_id), new_rows)
+            save_memory(character_id, branch_memory)
+        except Exception:
+            write_jsonl(history_path(character_id), rows)
+            if old_memory_existed and old_memory_data is not None:
+                write_json(old_memory_file, old_memory_data)
+            elif old_memory_file.exists():
+                old_memory_file.unlink()
+            raise
+
+        return jsonify({
+            "ok": True,
+            "deleted_future_messages": deleted_count,
+            "edited_message_id": edited_user["id"],
+            "assistant_message_id": replacement_assistant["id"],
+            "reply": visible,
+            "heart_whisper": heart_whisper,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/voices", methods=["GET"])
+def api_voices():
+    if FISH_API_KEY:
+        try:
+            voices = list_fish_voices(force=request.args.get("refresh") == "1")
+            if voices:
+                return jsonify({
+                    "provider": "fish",
+                    "model": FISH_TTS_MODEL,
+                    "voices": voices,
+                    "human_like": True,
+                })
+        except Exception as e:
+            return jsonify({
+                "provider": "edge",
+                "model": "edge-tts fallback",
+                "voices": edge_voice_catalog(),
+                "human_like": False,
+                "warning": f"Fish Audio unavailable: {e}",
+            })
+
+    return jsonify({
+        "provider": "edge",
+        "model": "edge-tts fallback",
+        "voices": edge_voice_catalog(),
+        "human_like": False,
+        "warning": (
+            "Fish Audio returned no public voice choices; using legacy Edge fallback."
+            if FISH_API_KEY
+            else "Set FISH_API_KEY in .env to load human-like Fish Audio voices."
+        ),
+    })
 
 
 @app.route("/api/tts", methods=["POST"])
@@ -949,12 +1331,24 @@ def api_tts():
     try:
         raw = request.get_json(force=True)
         text = clean_tts_text(raw.get("text") or "")
-        voice_style = str(raw.get("voice") or "Soft-spoken girl")
+        character_id = str(raw.get("character_id") or "").strip()
 
         if not text:
             return jsonify({"error": "No text to speak."}), 400
+        if not character_id:
+            return jsonify({"error": "character_id is required."}), 400
 
-        audio_data = asyncio.run(make_edge_tts_mp3(text, voice_style))
+        character = load_character(character_id)
+        if not character:
+            return jsonify({"error": "Character not found."}), 404
+
+        voice_provider = str(character.get("voice_provider") or "edge").strip().lower()
+        voice_id = str(character.get("voice_id") or character.get("voice") or "Soft-spoken girl").strip()
+
+        if voice_provider == "fish":
+            audio_data = make_fish_tts_mp3(text, voice_id)
+        else:
+            audio_data = asyncio.run(make_edge_tts_mp3(text, voice_id))
 
         return Response(
             audio_data,
@@ -1419,6 +1813,39 @@ INDEX_HTML = r"""
       background: color-mix(in srgb, var(--button) 88%, transparent);
     }
 
+    .voice-button[aria-pressed="true"] {
+      border-color: color-mix(in srgb, var(--danger) 58%, var(--border));
+      color: var(--danger);
+      background: color-mix(in srgb, var(--button) 70%, transparent);
+    }
+
+    .message-edit-wrap {
+      min-width: min(520px, 65vw);
+      max-width: 100%;
+      text-align: left;
+    }
+
+    .message-edit-area {
+      width: 100%;
+      min-height: 72px;
+      padding: 8px 10px;
+      resize: vertical;
+      border: 1px solid var(--accent);
+      border-radius: 11px;
+      outline: none;
+      background: var(--input-bg);
+      color: var(--text);
+      line-height: 1.42;
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
+    }
+
+    .message-edit-note {
+      margin: 5px 3px 0;
+      color: var(--muted);
+      font-size: 10px;
+      text-align: right;
+    }
+
     .heart-whisper-button[aria-expanded="true"] {
       border-color: var(--whisper-border);
       color: var(--whisper-text);
@@ -1782,19 +2209,9 @@ INDEX_HTML = r"""
 
       <label class="field-label" for="voice">Voice</label>
       <select id="voice">
-        <option>Flirting Lady</option>
-        <option>Mature sister</option>
-        <option>Sweet girl</option>
-        <option>Soft-spoken girl</option>
-        <option>Hoarse-voiced girl</option>
-        <option>Elegant lady</option>
-        <option>Mean girl</option>
-        <option>Brainy girl</option>
-        <option>Mysterious lady</option>
-        <option>Deep male</option>
-        <option>Calm male</option>
-        <option>Energetic male</option>
+        <option value="">Loading voices…</option>
       </select>
+      <div id="voiceStatus" class="small-note">Loading voice choices…</div>
 
       <div class="drawer-actions">
         <button class="drawer-button primary" type="button" onclick="saveCharacter()">Save Character</button>
@@ -1802,14 +2219,18 @@ INDEX_HTML = r"""
         <button class="drawer-button danger" type="button" onclick="deleteCharacter()">Delete Character</button>
       </div>
 
-      <p class="small-note">Full history still loads from local history. Prompt memory still uses permanent core memory, summary, remembered facts, and recent messages.</p>
+      <p class="small-note">Editing one of your bubbles creates a new timeline: every later message is permanently erased, prompt memory is rebuilt only from the retained branch, and the character answers the edited message again.</p>
     </aside>
   </div>
 
 <script>
 let characters = [];
 let selectedCharacter = null;
+let availableVoices = [];
 let currentAudio = null;
+let currentAudioUrl = null;
+let currentVoiceButton = null;
+let currentVoiceAbort = null;
 
 function isMobileLayout() {
   return window.matchMedia("(max-width: 760px)").matches;
@@ -1884,46 +2305,151 @@ async function loadConfig() {
   try {
     const res = await fetch("/api/config");
     const cfg = await res.json();
-    document.getElementById("configText").textContent = `${cfg.provider} · ${cfg.model}`;
+    const tts = cfg.fish_ready ? ` · voice ${cfg.tts_model}` : " · voice fallback";
+    document.getElementById("configText").textContent = `${cfg.provider} · ${cfg.model}${tts}`;
   } catch (err) {
     document.getElementById("configText").textContent = "Model status unavailable";
   }
 }
 
-async function playVoice(text) {
-  text = stripAction(text);
-  if (!text) return;
+function voiceKey(provider, id) {
+  return `${provider || "edge"}::${id || ""}`;
+}
+
+async function loadVoiceOptions(preferredCharacter=null, refresh=false) {
+  const select = document.getElementById("voice");
+  const status = document.getElementById("voiceStatus");
+  if (!select) return;
+
+  select.disabled = true;
+  select.innerHTML = `<option value="">Loading voices…</option>`;
+  if (status) status.textContent = "Loading voice choices…";
 
   try {
-    if (currentAudio) {
-      currentAudio.pause();
-      currentAudio = null;
+    const res = await fetch(`/api/voices${refresh ? "?refresh=1" : ""}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Could not load voices.");
+
+    availableVoices = Array.isArray(data.voices) ? data.voices : [];
+    select.innerHTML = "";
+
+    for (const voice of availableVoices) {
+      const option = document.createElement("option");
+      option.value = voiceKey(voice.provider, voice.id);
+      option.textContent = voice.name || voice.id || "Voice";
+      option.dataset.provider = voice.provider || "edge";
+      option.dataset.voiceId = voice.id || "";
+      option.dataset.voiceName = voice.name || voice.id || "Voice";
+      if (voice.description) option.title = voice.description;
+      select.appendChild(option);
     }
 
+    const preferredProvider = preferredCharacter?.voice_provider || "edge";
+    const preferredId = preferredCharacter?.voice_id || preferredCharacter?.voice || "";
+    const preferredName = preferredCharacter?.voice_name || preferredCharacter?.voice || preferredId;
+    const preferredKey = voiceKey(preferredProvider, preferredId);
+
+    if (preferredId && !Array.from(select.options).some(o => o.value === preferredKey)) {
+      const oldOption = document.createElement("option");
+      oldOption.value = preferredKey;
+      oldOption.textContent = preferredName || preferredId;
+      oldOption.dataset.provider = preferredProvider;
+      oldOption.dataset.voiceId = preferredId;
+      oldOption.dataset.voiceName = preferredName || preferredId;
+      select.insertBefore(oldOption, select.firstChild);
+    }
+
+    if (preferredId) select.value = preferredKey;
+    if (!select.value && select.options.length) select.selectedIndex = 0;
+    select.disabled = false;
+
+    if (status) {
+      status.textContent = data.human_like
+        ? `${availableVoices.length} Fish Audio voices · ${data.model}`
+        : (data.warning || "Legacy Edge voices are being used. Set FISH_API_KEY for human-like voices.");
+    }
+  } catch (err) {
+    availableVoices = [];
+    select.innerHTML = `<option value="edge::Soft-spoken girl" data-provider="edge" data-voice-id="Soft-spoken girl" data-voice-name="Soft-spoken girl">Soft-spoken girl</option>`;
+    select.disabled = false;
+    if (status) status.textContent = "Voice list failed: " + err.message;
+  }
+}
+
+function stopVoicePlayback() {
+  if (currentVoiceAbort) {
+    currentVoiceAbort.abort();
+    currentVoiceAbort = null;
+  }
+
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.currentTime = 0;
+    currentAudio.src = "";
+    currentAudio = null;
+  }
+
+  if (currentAudioUrl) {
+    URL.revokeObjectURL(currentAudioUrl);
+    currentAudioUrl = null;
+  }
+
+  if (currentVoiceButton) {
+    currentVoiceButton.textContent = "🔊 Voice";
+    currentVoiceButton.setAttribute("aria-pressed", "false");
+  }
+  currentVoiceButton = null;
+}
+
+async function playVoice(text, button) {
+  text = stripAction(text);
+  if (!text || !selectedCharacter) return;
+
+  // Same button: second click means STOP, including while the TTS request is still running.
+  if (currentVoiceButton === button) {
+    stopVoicePlayback();
+    return;
+  }
+
+  // A different voice button takes over playback.
+  stopVoicePlayback();
+  currentVoiceButton = button;
+  button.textContent = "■ Stop";
+  button.setAttribute("aria-pressed", "true");
+
+  const controller = new AbortController();
+  currentVoiceAbort = controller;
+
+  try {
     const res = await fetch("/api/tts", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
+      signal: controller.signal,
       body: JSON.stringify({
         text,
-        voice: selectedCharacter?.voice || "Soft-spoken girl"
+        character_id: selectedCharacter.id
       })
     });
 
+    if (controller.signal.aborted || currentVoiceButton !== button) return;
+
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      alert(err.error || "TTS failed.");
-      return;
+      throw new Error(err.error || "TTS failed.");
     }
 
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    currentAudio = new Audio(url);
-    currentAudio.onended = () => {
-      URL.revokeObjectURL(url);
-      currentAudio = null;
-    };
+    if (controller.signal.aborted || currentVoiceButton !== button) return;
+
+    currentVoiceAbort = null;
+    currentAudioUrl = URL.createObjectURL(blob);
+    currentAudio = new Audio(currentAudioUrl);
+    currentAudio.onended = stopVoicePlayback;
+    currentAudio.onerror = stopVoicePlayback;
     await currentAudio.play();
   } catch (err) {
+    if (err.name === "AbortError") return;
+    stopVoicePlayback();
     alert("Voice playback failed: " + err.message);
   }
 }
@@ -2018,7 +2544,7 @@ function renderCharacterList() {
 
     const voice = document.createElement("div");
     voice.className = "char-voice";
-    voice.textContent = c.voice || "Voice";
+    voice.textContent = c.voice_name || c.voice || "Voice";
 
     copy.append(name, meta, voice);
     card.append(status, img, copy);
@@ -2026,7 +2552,8 @@ function renderCharacterList() {
   });
 }
 
-function newCharacter() {
+async function newCharacter() {
+  stopVoicePlayback();
   selectedCharacter = null;
   document.getElementById("editorTitle").textContent = "Create Character";
   document.getElementById("name").value = "";
@@ -2036,8 +2563,8 @@ function newCharacter() {
   document.getElementById("greeting").value = "";
   document.getElementById("core_memory").value = "";
   document.getElementById("dialogue_style").value = "";
-  document.getElementById("voice").value = "Soft-spoken girl";
   setSelectedTags({});
+  await loadVoiceOptions(null);
 
   document.getElementById("chatTitle").textContent = "No character selected";
   document.getElementById("chatSub").textContent = "Create or choose a character.";
@@ -2057,6 +2584,7 @@ async function selectCharacter(id) {
     return;
   }
 
+  stopVoicePlayback();
   selectedCharacter = data;
   document.getElementById("editorTitle").textContent = "Update Character";
   document.getElementById("name").value = selectedCharacter.name || "";
@@ -2066,8 +2594,8 @@ async function selectCharacter(id) {
   document.getElementById("greeting").value = selectedCharacter.greeting || "";
   document.getElementById("core_memory").value = selectedCharacter.core_memory || "";
   document.getElementById("dialogue_style").value = selectedCharacter.dialogue_style || "";
-  document.getElementById("voice").value = selectedCharacter.voice || "Soft-spoken girl";
   setSelectedTags(selectedCharacter.tags || {});
+  await loadVoiceOptions(selectedCharacter);
 
   document.getElementById("chatTitle").textContent = selectedCharacter.name;
   document.getElementById("chatSub").textContent = selectedCharacter.intro;
@@ -2079,6 +2607,7 @@ async function selectCharacter(id) {
 }
 
 async function loadHistory() {
+  stopVoicePlayback();
   const box = document.getElementById("messages");
   if (!selectedCharacter) {
     box.innerHTML = "";
@@ -2108,7 +2637,8 @@ async function loadHistory() {
         msg.role === "user" ? "user" : "bot",
         msg.content || "",
         msg.heart_whisper || "",
-        false
+        false,
+        msg.id || null
       );
     }
 
@@ -2120,6 +2650,12 @@ async function loadHistory() {
 }
 
 async function saveCharacter() {
+  const voiceSelect = document.getElementById("voice");
+  const voiceOption = voiceSelect.options[voiceSelect.selectedIndex];
+  const voiceProvider = voiceOption?.dataset.provider || "edge";
+  const voiceId = voiceOption?.dataset.voiceId || voiceOption?.value?.split("::").slice(1).join("::") || "Soft-spoken girl";
+  const voiceName = voiceOption?.dataset.voiceName || voiceOption?.textContent || voiceId;
+
   const body = {
     id: selectedCharacter?.id,
     name: document.getElementById("name").value,
@@ -2130,7 +2666,10 @@ async function saveCharacter() {
     core_memory: document.getElementById("core_memory").value,
     tags: getSelectedTags(),
     dialogue_style: document.getElementById("dialogue_style").value,
-    voice: document.getElementById("voice").value,
+    voice: voiceName,
+    voice_name: voiceName,
+    voice_provider: voiceProvider,
+    voice_id: voiceId,
   };
 
   const method = selectedCharacter ? "PUT" : "POST";
@@ -2169,6 +2708,7 @@ async function deleteCharacter() {
     return;
   }
   if (!confirm(`Delete ${selectedCharacter.name}, including memory and local history?`)) return;
+  stopVoicePlayback();
   await fetch(`/api/characters/${selectedCharacter.id}`, {method: "DELETE"});
   selectedCharacter = null;
   closeEditor();
@@ -2204,10 +2744,11 @@ function makeUserAvatar() {
   return div;
 }
 
-function addMessage(type, text, heartWhisper="", shouldScroll=true) {
+function addMessage(type, text, heartWhisper="", shouldScroll=true, messageId=null) {
   const box = document.getElementById("messages");
   const row = document.createElement("div");
   row.className = `message-row ${type === "user" ? "send" : "bot"}`;
+  if (messageId) row.dataset.messageId = messageId;
 
   const stack = document.createElement("div");
   stack.className = "message-stack";
@@ -2262,19 +2803,116 @@ function addMessage(type, text, heartWhisper="", shouldScroll=true) {
 
     const voiceBtn = document.createElement("button");
     voiceBtn.type = "button";
-    voiceBtn.className = "message-action-button";
+    voiceBtn.className = "message-action-button voice-button";
     voiceBtn.textContent = "🔊 Voice";
-    voiceBtn.onclick = () => playVoice(text);
+    voiceBtn.setAttribute("aria-pressed", "false");
+    voiceBtn.onclick = () => playVoice(text, voiceBtn);
 
     actions.appendChild(voiceBtn);
     row.append(makeBotAvatar(), stack);
   } else {
+    const actions = document.createElement("div");
+    actions.className = "message-actions";
+
+    if (messageId) {
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "message-action-button";
+      editBtn.textContent = "✎ Edit";
+      editBtn.onclick = () => beginEditMessage(row, bubble, actions, messageId, text);
+      actions.appendChild(editBtn);
+    }
+
+    stack.appendChild(actions);
     row.append(stack, makeUserAvatar());
   }
 
   box.appendChild(row);
   if (shouldScroll) box.scrollTop = box.scrollHeight;
   return row;
+}
+
+function beginEditMessage(row, bubble, actions, messageId, originalText) {
+  if (!selectedCharacter || !messageId || row.dataset.editing === "true") return;
+  row.dataset.editing = "true";
+
+  const wrap = document.createElement("div");
+  wrap.className = "message-edit-wrap";
+
+  const area = document.createElement("textarea");
+  area.className = "message-edit-area";
+  area.value = originalText;
+  area.setAttribute("aria-label", "Edit your message");
+
+  const note = document.createElement("div");
+  note.className = "message-edit-note";
+  note.textContent = "Saving rewrites the timeline from this message onward.";
+
+  const editActions = document.createElement("div");
+  editActions.className = "message-actions";
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "message-action-button";
+  saveBtn.textContent = "Save & branch";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "message-action-button";
+  cancelBtn.textContent = "Cancel";
+
+  const restore = () => {
+    wrap.replaceWith(bubble);
+    editActions.replaceWith(actions);
+    row.dataset.editing = "false";
+  };
+
+  cancelBtn.onclick = restore;
+  saveBtn.onclick = async () => {
+    const edited = area.value.trim();
+    if (!edited) {
+      alert("Message cannot be empty.");
+      return;
+    }
+    if (edited === originalText) {
+      restore();
+      return;
+    }
+
+    if (!confirm("Save this edit? Every later message in this conversation will be permanently erased and the character will answer this edited message as a new timeline.")) {
+      return;
+    }
+
+    saveBtn.disabled = true;
+    cancelBtn.disabled = true;
+    saveBtn.textContent = "Branching…";
+    stopVoicePlayback();
+
+    try {
+      const res = await fetch(`/api/characters/${encodeURIComponent(selectedCharacter.id)}/messages/${encodeURIComponent(messageId)}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({content: edited})
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Edit failed.");
+
+      await loadHistory();
+      await loadCharacters();
+    } catch (err) {
+      alert("Could not edit message: " + err.message);
+      saveBtn.disabled = false;
+      cancelBtn.disabled = false;
+      saveBtn.textContent = "Save & branch";
+    }
+  };
+
+  editActions.append(saveBtn, cancelBtn);
+  wrap.append(area, note);
+  bubble.replaceWith(wrap);
+  actions.replaceWith(editActions);
+  area.focus();
+  area.setSelectionRange(area.value.length, area.value.length);
 }
 
 function stripAction(text) {
@@ -2292,7 +2930,7 @@ async function sendMessage() {
   if (!text) return;
   input.value = "";
 
-  addMessage("user", text);
+  const userRow = addMessage("user", text);
   const pending = addMessage("bot", "*thinking quietly* ...");
   pending.dataset.pending = "true";
 
@@ -2307,14 +2945,18 @@ async function sendMessage() {
     pending.remove();
 
     if (!res.ok) {
+      userRow.remove();
       addMessage("bot", "*the system flickers* " + (data.error || "Something went wrong."));
       return;
     }
 
-    addMessage("bot", data.reply, data.heart_whisper);
+    // Reload from durable history so the new user bubble immediately receives its stable
+    // editable message ID and all controls exactly match what is on disk.
+    await loadHistory();
     await loadCharacters();
   } catch (err) {
     pending.remove();
+    userRow.remove();
     addMessage("bot", "*the system flickers* " + err.message);
   }
 }
@@ -2361,6 +3003,7 @@ window.addEventListener("resize", () => {
 
 initTheme();
 loadConfig();
+loadVoiceOptions();
 loadCharacters();
 </script>
 </body>
