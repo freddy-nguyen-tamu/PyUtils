@@ -32,6 +32,8 @@ class Piece:
     x: int
     y: int
     canvas_id: int | None = None
+    close_bg_id: int | None = None
+    close_text_id: int | None = None
     tk_image: ImageTk.PhotoImage | None = field(default=None, repr=False)
 
     @property
@@ -52,7 +54,9 @@ class PuzzleMerger(tk.Tk):
 
         self.pieces: list[Piece] = []
         self.id_to_piece: dict[int, Piece] = {}
+        self.close_id_to_piece: dict[int, Piece] = {}
         self.zoom = 1.0
+        self.close_button_size = 18
 
         self.drag_piece: Piece | None = None
         self.drag_start_mouse = (0.0, 0.0)
@@ -203,6 +207,7 @@ class PuzzleMerger(tk.Tk):
     def clear_workspace(self) -> None:
         self.pieces.clear()
         self.id_to_piece.clear()
+        self.close_id_to_piece.clear()
         self.drag_piece = None
         self.drag_start_mouse = (0.0, 0.0)
         self.drag_start_piece = (0, 0)
@@ -259,6 +264,7 @@ class PuzzleMerger(tk.Tk):
     def render_all(self) -> None:
         self.canvas.delete("all")
         self.id_to_piece.clear()
+        self.close_id_to_piece.clear()
 
         for piece in self.pieces:
             display_w = max(1, round(piece.width * self.zoom))
@@ -277,8 +283,76 @@ class PuzzleMerger(tk.Tk):
                 anchor="nw",
             )
             self.id_to_piece[piece.canvas_id] = piece
+            self.create_close_button(piece)
 
         self.update_scrollregion()
+
+    def create_close_button(self, piece: Piece) -> None:
+        """Draw a small fixed-size × control inside the piece's top-right corner."""
+        right = (piece.x + piece.width) * self.zoom
+        top = piece.y * self.zoom
+        size = self.close_button_size
+        inset = 2
+        x2 = right - inset
+        y1 = top + inset
+        x1 = x2 - size
+        y2 = y1 + size
+
+        piece.close_bg_id = self.canvas.create_rectangle(
+            x1, y1, x2, y2,
+            fill="#c62828",
+            outline="#ffffff",
+            width=1,
+        )
+        piece.close_text_id = self.canvas.create_text(
+            (x1 + x2) / 2,
+            (y1 + y2) / 2 - 1,
+            text="×",
+            fill="white",
+            font=("Segoe UI", 12, "bold"),
+        )
+        self.close_id_to_piece[piece.close_bg_id] = piece
+        self.close_id_to_piece[piece.close_text_id] = piece
+
+    def update_piece_canvas_position(self, piece: Piece) -> None:
+        """Move an image and its × control together after dragging/snapping."""
+        if piece.canvas_id is not None:
+            self.canvas.coords(piece.canvas_id, piece.x * self.zoom, piece.y * self.zoom)
+
+        right = (piece.x + piece.width) * self.zoom
+        top = piece.y * self.zoom
+        size = self.close_button_size
+        inset = 2
+        x2 = right - inset
+        y1 = top + inset
+        x1 = x2 - size
+        y2 = y1 + size
+
+        if piece.close_bg_id is not None:
+            self.canvas.coords(piece.close_bg_id, x1, y1, x2, y2)
+        if piece.close_text_id is not None:
+            self.canvas.coords(piece.close_text_id, (x1 + x2) / 2, (y1 + y2) / 2 - 1)
+
+    def close_piece_under_pointer(self, event: tk.Event) -> Piece | None:
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        items = self.canvas.find_overlapping(x, y, x, y)
+        for item_id in reversed(items):
+            piece = self.close_id_to_piece.get(item_id)
+            if piece is not None:
+                return piece
+        return None
+
+    def remove_piece(self, piece: Piece) -> None:
+        """Remove a piece from the current draft only; never touch its source file."""
+        if piece not in self.pieces:
+            return
+        name = piece.path.name
+        self.pieces.remove(piece)
+        if self.drag_piece is piece:
+            self.drag_piece = None
+        self.render_all()
+        self.status.set(f"Removed {name} from the current draft. Source file unchanged.")
 
     def update_scrollregion(self) -> None:
         if not self.pieces:
@@ -314,6 +388,11 @@ class PuzzleMerger(tk.Tk):
         return None
 
     def on_press(self, event: tk.Event) -> None:
+        close_piece = self.close_piece_under_pointer(event)
+        if close_piece is not None:
+            self.remove_piece(close_piece)
+            return
+
         piece = self.piece_under_pointer(event)
         if piece is None:
             return
@@ -330,6 +409,10 @@ class PuzzleMerger(tk.Tk):
         self.pieces.append(piece)
         if piece.canvas_id is not None:
             self.canvas.tag_raise(piece.canvas_id)
+        if piece.close_bg_id is not None:
+            self.canvas.tag_raise(piece.close_bg_id)
+        if piece.close_text_id is not None:
+            self.canvas.tag_raise(piece.close_text_id)
 
         self.status.set(f"Dragging {piece.path.name}")
 
@@ -345,7 +428,7 @@ class PuzzleMerger(tk.Tk):
 
         piece.x = round(self.drag_start_piece[0] + dx)
         piece.y = round(self.drag_start_piece[1] + dy)
-        self.canvas.coords(piece.canvas_id, piece.x * self.zoom, piece.y * self.zoom)
+        self.update_piece_canvas_position(piece)
         self.update_scrollregion()
 
     def on_release(self, _event: tk.Event) -> None:
@@ -363,8 +446,7 @@ class PuzzleMerger(tk.Tk):
         piece.x = snapped_x
         piece.y = snapped_y
 
-        if piece.canvas_id is not None:
-            self.canvas.coords(piece.canvas_id, piece.x * self.zoom, piece.y * self.zoom)
+        self.update_piece_canvas_position(piece)
         self.update_scrollregion()
         self.status.set(
             f"Snapped {piece.path.name} side-to-side on the {side} of {target.path.name}."
@@ -531,9 +613,7 @@ class PuzzleMerger(tk.Tk):
             "Remove from layout",
             f"Remove {piece.path.name} from this layout?\n\nThe file itself will not be deleted.",
         ):
-            self.pieces.remove(piece)
-            self.render_all()
-            self.status.set(f"Removed {piece.path.name} from the layout.")
+            self.remove_piece(piece)
 
     def on_mousewheel(self, event: tk.Event) -> None:
         # Ctrl + wheel zooms. Plain wheel keeps normal canvas scrolling behavior.
@@ -624,12 +704,6 @@ class PuzzleMerger(tk.Tk):
                 except Exception as exc:
                     trash_errors.append(f"{source.name}: {exc}")
 
-        if self.move_to_trash.get() and not trash_errors:
-            # Replace the now-trashed source pieces with the newly created merged image.
-            self.clear_workspace()
-            self.add_paths([out_path])
-            self.fit_view()
-
         details = [f"Saved:\n{out_path}"]
         if moved:
             details.append(f"Moved {len(moved)} source file(s) to the Recycle Bin.")
@@ -647,7 +721,10 @@ class PuzzleMerger(tk.Tk):
         else:
             messagebox.showinfo("Merge complete", "\n\n".join(details))
 
-        self.status.set(f"Saved merged image to {out_path.name}")
+        # A completed save always ends the current drafting session.  Do not load
+        # the merged output back into the editor; the next draft starts blank.
+        self.clear_workspace()
+        self.status.set(f"Saved {out_path.name}. Workspace reset and ready for a new draft.")
 
 
 if __name__ == "__main__":
