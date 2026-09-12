@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import math
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 import tkinter as tk
@@ -33,6 +34,8 @@ SUPPORTED_EXTS.update({".heic", ".heif"})
 THUMB_SIZE = (230, 170)
 PREVIEW_MAX_SIDE = 1100
 CROP_THUMB = (175, 130)
+CACHE_FILENAME = ".photo_grid_splitter_memory.json"
+CACHE_VERSION = 1
 Box = tuple[int, int, int, int]
 
 
@@ -67,6 +70,146 @@ class ScanRequest:
     folder: Path
     threshold: float
     recursive: bool
+
+
+# ------------------------------ folder memory / cache ------------------------------
+
+class FolderMemory:
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self.path = self.root / CACHE_FILENAME
+        self.data = {"version": CACHE_VERSION, "root": str(self.root), "entries": {}}
+        self._load()
+
+    def _blank(self) -> dict:
+        return {"version": CACHE_VERSION, "root": str(self.root), "entries": {}}
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                return
+            if loaded.get("version") != CACHE_VERSION:
+                return
+            entries = loaded.get("entries")
+            if not isinstance(entries, dict):
+                return
+            self.data = loaded
+            self.data.setdefault("root", str(self.root))
+            self.data.setdefault("entries", {})
+        except Exception:
+            pass
+
+    def reset(self) -> None:
+        self.data = self._blank()
+        try:
+            if self.path.exists():
+                self.path.unlink()
+        except Exception:
+            self.save()
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + '.tmp')
+        tmp.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding='utf-8')
+        os.replace(tmp, self.path)
+
+    def _key(self, path: Path) -> str:
+        try:
+            rel = path.relative_to(self.root).as_posix()
+        except Exception:
+            rel = path.name
+        return rel.lower() if os.name == 'nt' else rel
+
+    def _sig(self, path: Path) -> dict:
+        st = path.stat()
+        return {"size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns)}
+
+    def get(self, path: Path) -> tuple[str, dict | None]:
+        key = self._key(path)
+        entry = self.data.setdefault("entries", {}).get(key)
+        if not entry:
+            return key, None
+        try:
+            sig = self._sig(path)
+        except OSError:
+            return key, None
+        if entry.get("sig") == sig:
+            return key, entry
+        return key, None
+
+    def remember_scan(self, path: Path, det: GridDetection | None, threshold: float) -> dict:
+        key = self._key(path)
+        status = "not_grid"
+        entry = {
+            "sig": self._sig(path),
+            "name": path.name,
+            "status": status,
+            "updated_at": time.time(),
+            "confidence_threshold": float(threshold),
+        }
+        if det is None:
+            entry["detected"] = False
+            entry["pieces"] = 0
+            entry["confidence"] = 0.0
+            entry["reason"] = "not a grid"
+        else:
+            entry.update({
+                "detected": True,
+                "pieces": int(len(det.boxes)),
+                "confidence": float(det.confidence),
+                "score": float(det.score),
+                "mode": det.mode,
+                "reason": det.reason,
+                "boxes": [list(b) for b in det.boxes],
+            })
+            if det.confidence >= threshold:
+                status = "candidate_pending_review"
+            else:
+                status = "below_threshold"
+            entry["status"] = status
+        self.data.setdefault("entries", {})[key] = entry
+        return entry
+
+    def mark_status(self, path: Path, status: str, **extra) -> dict:
+        key = self._key(path)
+        entry = self.data.setdefault("entries", {}).get(key, {"name": path.name})
+        try:
+            entry["sig"] = self._sig(path)
+        except OSError:
+            pass
+        entry["status"] = status
+        entry["updated_at"] = time.time()
+        for k, v in extra.items():
+            entry[k] = v
+        self.data["entries"][key] = entry
+        return entry
+
+
+def format_cached_status(entry: dict) -> str:
+    status = entry.get("status", "seen")
+    pieces = entry.get("pieces")
+    conf = entry.get("confidence")
+    if status == "not_grid":
+        return "not a grid"
+    if status == "below_threshold":
+        return f"below threshold ({conf:.0%})" if isinstance(conf, (int, float)) else "below threshold"
+    if status == "candidate_pending_review":
+        prefix = f"candidate ({pieces} pieces" if pieces else "candidate"
+        if isinstance(conf, (int, float)):
+            prefix += f", {conf:.0%}"
+        return prefix + ")"
+    if status == "review_rejected":
+        return "already reviewed/rejected"
+    if status == "processed_saved":
+        return "already split/saved"
+    if status == "save_failed":
+        return "save failed previously"
+    if status == "scan_error":
+        return "scan error previously"
+    return status.replace('_', ' ')
 
 
 # ------------------------------ image helpers ------------------------------
@@ -407,44 +550,63 @@ def collect_image_paths(root: Path, recursive: bool) -> list[Path]:
 
 def scan_folder_terminal(request: ScanRequest) -> tuple[list[Candidate], str]:
     ensure_console()
+    memory = FolderMemory(request.folder)
     paths = collect_image_paths(request.folder, request.recursive)
     total = len(paths)
     candidates: list[Candidate] = []
     errors = 0
+    skipped = 0
+    scanned = 0
     started = time.perf_counter()
 
     print("\n" + "="*82, flush=True)
     print("ADVANCED PHOTO GRID DETECTOR - TERMINAL SCAN", flush=True)
     print(f"Folder: {request.folder}", flush=True)
     print(f"Recursive folders: {'yes' if request.recursive else 'no'}", flush=True)
-    print(f"Images to inspect: {total}", flush=True)
+    print(f"Images found: {total}", flush=True)
+    print(f"Folder memory file: {memory.path.name}", flush=True)
+    print("Unchanged files already seen before are skipped automatically.", flush=True)
     print("Detects regular grids AND recursive asymmetric/T-junction layouts.", flush=True)
     print("="*82, flush=True)
 
+    width = len(str(max(1, total)))
     for i, path in enumerate(paths, 1):
         try:
             rel = path.relative_to(request.folder)
         except Exception:
             rel = path.name
-        print(f"[{i:>{len(str(max(1,total)))}}/{total}] {rel}", end=" ... ", flush=True)
+        print(f"[{i:>{width}}/{total}] {rel}", end=" ... ", flush=True)
+        _, cached = memory.get(path)
+        if cached is not None:
+            skipped += 1
+            print(f"SKIP cached: {format_cached_status(cached)}", flush=True)
+            continue
+        scanned += 1
         try:
             im = open_image(path)
             det = detect_photo_grid(im)
+            memory.remember_scan(path, det, request.threshold)
             if det is None:
                 print("not a grid", flush=True)
             elif det.confidence >= request.threshold:
                 thumb = preview_copy(im, THUMB_SIZE)
                 candidates.append(Candidate(path, det, True, thumb))
-                print(f"LIKELY GRID | {len(det.boxes)} pieces | {det.mode} | confidence {det.confidence:.0%}", flush=True)
+                print(f"NEW LIKELY GRID | {len(det.boxes)} pieces | {det.mode} | confidence {det.confidence:.0%}", flush=True)
             else:
                 print(f"grid-like {len(det.boxes)} pieces, below threshold ({det.confidence:.0%})", flush=True)
         except Exception as exc:
             errors += 1
+            memory.mark_status(path, "scan_error", error=f"{type(exc).__name__}: {exc}")
             print(f"ERROR: {type(exc).__name__}: {exc}", flush=True)
 
+    memory.save()
     candidates.sort(key=lambda c: c.detection.confidence, reverse=True)
     elapsed = time.perf_counter() - started
-    msg = f"Found {len(candidates)} likely photo grids out of {total} images. Scan time: {elapsed:.1f}s."
+    msg = (
+        f"Found {len(candidates)} new likely photo grids. "
+        f"Scanned {scanned} new image(s), skipped {skipped} previously seen image(s), total files {total}. "
+        f"Scan time: {elapsed:.1f}s."
+    )
     if errors:
         msg += f" {errors} file(s) could not be inspected."
     print("-"*82, flush=True)
@@ -477,10 +639,11 @@ class GridSplitterApp(tk.Tk):
         self.geometry("1200x790")
         self.minsize(920, 620)
         self.folder = tk.StringVar(value=str(initial_folder) if initial_folder else "")
-        self.status = tk.StringVar(value=initial_status or "Choose a folder. The UI closes while terminal scanning runs.")
+        self.status = tk.StringVar(value=initial_status or "Choose a folder. The UI closes while terminal scanning runs. Previously seen unchanged files are skipped automatically.")
         self.threshold = tk.DoubleVar(value=threshold)
         self.recursive = tk.BooleanVar(value=recursive)
         self.candidates: list[Candidate] = initial_candidates or []
+        self.memory = FolderMemory(Path(initial_folder)) if initial_folder else None
         self.scan_request: ScanRequest | None = None
         self._build()
         if initial_candidates is not None:
@@ -492,6 +655,7 @@ class GridSplitterApp(tk.Tk):
         ttk.Entry(top, textvariable=self.folder).pack(side="left", fill="x", expand=True, padx=8)
         ttk.Checkbutton(top, text="Include subfolders", variable=self.recursive).pack(side="left", padx=(0,8))
         ttk.Button(top, text="Scan / Rescan", command=self.scan).pack(side="left")
+        ttk.Button(top, text="Forget Folder Memory", command=self.forget_memory).pack(side="left", padx=(8,0))
 
         opts = ttk.Frame(self, padding=(8,0,8,8)); opts.pack(fill="x")
         ttk.Label(opts, text="Minimum confidence shown:").pack(side="left")
@@ -515,6 +679,19 @@ class GridSplitterApp(tk.Tk):
             messagebox.showerror("Folder required", "Choose a valid folder first."); return
         self.scan_request = ScanRequest(root, float(self.threshold.get()), bool(self.recursive.get()))
         self.quit(); self.destroy()
+
+    def forget_memory(self):
+        root = Path(self.folder.get().strip())
+        if not root.is_dir():
+            messagebox.showerror("Folder required", "Choose a valid folder first.")
+            return
+        cache = FolderMemory(root)
+        count = len(cache.data.get("entries", {}))
+        if not messagebox.askyesno("Forget folder memory", f"Delete saved memory for this folder?\n\nThis will make the next scan treat all files in:\n{root}\nas unseen again.\n\nRemembered entries: {count}"):
+            return
+        cache.reset()
+        self.memory = FolderMemory(root)
+        self.status.set(f"Forgot saved memory for {root.name}. The next scan will inspect every image again.")
 
     def _render_candidates(self):
         for child in self.cards.inner.winfo_children(): child.destroy()
@@ -746,7 +923,12 @@ class ReviewWindow(tk.Toplevel):
         count=sum(len(it.boxes) for it in approved)
         if not messagebox.askyesno("Final approval",f"Create {count} new images from {len(approved)} approved photo grid(s)?\n\nOnly after every piece from a grid saves successfully will its original composite be moved to the Windows Recycle Bin."):
             return
+        memory = self.master.memory or (FolderMemory(Path(self.master.folder.get().strip())) if self.master.folder.get().strip() else None)
         successes=0; failures=[]; created=[]
+        rejected=[it for it in self.items if not it.approved]
+        for it in rejected:
+            if memory is not None:
+                memory.mark_status(it.candidate.path, "review_rejected", pieces=len(it.boxes), confidence=float(it.candidate.detection.confidence), reason=it.candidate.detection.reason)
         for it in approved:
             src=it.candidate.path; local=[]
             try:
@@ -756,8 +938,15 @@ class ReviewWindow(tk.Toplevel):
                 for n,b in enumerate(boxes,1):
                     crop=im.crop(b); final=unique_path(src.with_name(f"{src.stem}_part_{n:02d}{ext}")); save_crop_atomic(crop,final); local.append(final)
                 send2trash(str(src)); created.extend(local); successes+=1
+                if memory is not None:
+                    memory.mark_status(src, "processed_saved", pieces=len(boxes), output_count=len(local), outputs=[p.name for p in local], confidence=float(it.candidate.detection.confidence), reason=it.candidate.detection.reason)
             except Exception as exc:
                 failures.append(f"{src.name}: {exc}")
+                if memory is not None:
+                    memory.mark_status(src, "save_failed", pieces=len(it.boxes), error=str(exc), confidence=float(it.candidate.detection.confidence), reason=it.candidate.detection.reason)
+        if memory is not None:
+            memory.save()
+            self.master.memory = memory
         if failures:
             messagebox.showwarning("Batch completed with issues",f"Successfully processed {successes}/{len(approved)} grids.\n\n"+"\n".join(failures[:12]))
         else:
