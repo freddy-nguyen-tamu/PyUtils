@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import time
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 import tkinter as tk
@@ -13,10 +14,11 @@ try:
     import numpy as np
     from PIL import Image, ImageTk, ImageOps
     from ultralytics import YOLO
+    from send2trash import send2trash
 except ImportError as exc:
     raise SystemExit(
         "Missing dependency. Run:\n"
-        "  py -m pip install ultralytics pillow numpy\n"
+        "  py -m pip install ultralytics pillow numpy send2trash\n"
         "Optional HEIC/HEIF support:\n"
         "  py -m pip install pillow-heif"
     ) from exc
@@ -30,7 +32,7 @@ except Exception:
 Image.init()
 SUPPORTED_EXTS = {ext.lower() for ext in Image.registered_extensions()}
 SUPPORTED_EXTS.update({".heic", ".heif"})
-GENERATED_RE = re.compile(r"_person_\d+$", re.IGNORECASE)
+GENERATED_RE = re.compile(r"_person_\d+(?:_\d+)?$", re.IGNORECASE)
 MODEL_NAME = "yolov8s-seg.pt"
 DETECT_CONF = 0.20
 # High IoU threshold deliberately preserves strongly-overlapping people.
@@ -39,6 +41,8 @@ MAX_DETECTIONS = 100
 AUTO_PADDING = 0.10
 MIN_BOX_SIDE = 8
 HANDLE_RADIUS = 6
+MEMORY_FILENAME = ".human_crop_splitter_memory.json"
+MEMORY_VERSION = 2
 
 Box = tuple[int, int, int, int]
 
@@ -66,6 +70,99 @@ class Candidate:
 class ScanRequest:
     folder: Path
     recursive: bool
+    ignore_history: bool = False
+
+
+# ------------------------------ folder memory ------------------------------
+
+class FolderMemory:
+    """Persistent per-folder history used to skip unchanged files on later runs."""
+
+    def __init__(self, folder: Path):
+        self.folder = Path(folder)
+        self.path = self.folder / MEMORY_FILENAME
+        self.data = {"version": MEMORY_VERSION, "entries": {}}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if (isinstance(loaded, dict) and
+                    loaded.get("version") == MEMORY_VERSION and
+                    isinstance(loaded.get("entries"), dict)):
+                self.data = loaded
+        except Exception:
+            # A damaged memory file should never prevent image processing.
+            pass
+
+    def _key(self, path: Path) -> str:
+        try:
+            rel = path.relative_to(self.folder).as_posix()
+        except Exception:
+            rel = path.name
+        return rel.lower() if os.name == "nt" else rel
+
+    @staticmethod
+    def _signature(path: Path) -> dict:
+        st = path.stat()
+        return {"size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns)}
+
+    def lookup_unchanged(self, path: Path) -> dict | None:
+        entry = self.data["entries"].get(self._key(path))
+        if not entry:
+            return None
+        try:
+            if entry.get("signature") == self._signature(path):
+                return entry
+        except OSError:
+            pass
+        return None
+
+    def remember(self, path: Path, status: str, **extra) -> None:
+        key = self._key(path)
+        entry = self.data["entries"].get(key, {})
+        try:
+            entry["signature"] = self._signature(path)
+        except OSError:
+            # The source may already have been moved to the Recycle Bin. Preserve
+            # its previous signature so its history is still meaningful.
+            pass
+        entry.update({
+            "name": path.name,
+            "status": status,
+            "updated_at": time.time(),
+        })
+        entry.update(extra)
+        self.data["entries"][key] = entry
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self.path)
+
+    def forget(self) -> None:
+        self.data = {"version": MEMORY_VERSION, "entries": {}}
+        try:
+            if self.path.exists():
+                self.path.unlink()
+        except OSError:
+            self.save()
+
+
+def memory_status_text(entry: dict) -> str:
+    status = entry.get("status", "seen")
+    mapping = {
+        "review_candidate": "already detected/review candidate",
+        "review_rejected": "reviewed/rejected",
+        "reviewed_no_crops": "reviewed with no crops",
+        "saved_and_trashed": "already cropped and source trashed",
+        "save_failed": "save previously failed",
+        "scan_error": "scan error previously",
+    }
+    return mapping.get(status, status.replace("_", " "))
 
 
 # ------------------------------ image I/O ------------------------------
@@ -293,27 +390,52 @@ def ensure_console() -> None:
 
 def scan_folder_terminal(request: ScanRequest) -> tuple[list[Candidate], str]:
     ensure_console()
+    memory = FolderMemory(request.folder)
     paths = collect_image_paths(request.folder, request.recursive)
     total = len(paths)
     width = len(str(max(1, total)))
     candidates: list[Candidate] = []
-    singles = 0
-    none = 0
+    zero_detected = 0
+    one_detected = 0
+    multi_detected = 0
     failures = 0
+    skipped = 0
+    scanned = 0
     started = time.perf_counter()
 
     print("\n" + "=" * 86, flush=True)
-    print("MULTI-HUMAN IMAGE DETECTOR - TERMINAL SCAN", flush=True)
+    print("HUMAN CROP DETECTOR - TERMINAL SCAN", flush=True)
     print(f"Folder: {request.folder}", flush=True)
     print(f"Recursive: {'yes' if request.recursive else 'no'}", flush=True)
-    print(f"Images to inspect: {total}", flush=True)
+    print(f"Images found: {total}", flush=True)
+    if request.ignore_history:
+        print(f"Memory: {memory.path.name} (IGNORED FOR THIS RUN ONLY; saved history is not deleted)", flush=True)
+    else:
+        print(f"Memory: {memory.path.name} (unchanged previously-seen images are skipped)", flush=True)
     print(f"Model: {MODEL_NAME} | confidence {DETECT_CONF:.2f} | overlap-friendly IoU {DETECT_IOU:.2f}", flush=True)
-    print("The review UI will reopen only after every image has been checked.", flush=True)
+    print("NO person-count restriction: 0, 1, or many detections all go to manual review.", flush=True)
+    print("The review UI will reopen only after every new/modified image has been checked.", flush=True)
     print("=" * 86, flush=True)
 
-    print(f"Loading {MODEL_NAME} ...", end=" ", flush=True)
-    model = YOLO(MODEL_NAME)
-    print("ready", flush=True)
+    # Do not load YOLO at all if every source image is already remembered, unless
+    # the user explicitly chose to ignore history for this run. That option does
+    # NOT delete the memory file; it simply bypasses lookups once.
+    unseen: list[Path] = []
+    cached_for_path: dict[Path, dict] = {}
+    for path in paths:
+        cached = None if request.ignore_history else memory.lookup_unchanged(path)
+        if cached is None:
+            unseen.append(path)
+        else:
+            cached_for_path[path] = cached
+
+    model = None
+    if unseen:
+        print(f"Loading {MODEL_NAME} for {len(unseen)} new/modified image(s) ...", end=" ", flush=True)
+        model = YOLO(MODEL_NAME)
+        print("ready", flush=True)
+    else:
+        print("No new or modified images. YOLO model load skipped.", flush=True)
 
     for i, path in enumerate(paths, 1):
         try:
@@ -321,34 +443,57 @@ def scan_folder_terminal(request: ScanRequest) -> tuple[list[Candidate], str]:
         except Exception:
             rel = path.name
         print(f"[{i:>{width}}/{total}] {rel}", end=" ... ", flush=True)
+
+        cached = cached_for_path.get(path)
+        if cached is not None:
+            skipped += 1
+            print(f"SKIP remembered: {memory_status_text(cached)}", flush=True)
+            continue
+
+        scanned += 1
         try:
             img = open_image(path)
             crops = detect_people(model, img)
             n = len(crops)
-            if n >= 2:
-                candidates.append(Candidate(path, crops))
-                overlap_pairs = 0
-                for a in range(n):
-                    for b in range(a + 1, n):
-                        if box_iou(crops[a].box, crops[b].box) > 0:
-                            overlap_pairs += 1
-                extra = f" | {overlap_pairs} overlapping crop pair(s)" if overlap_pairs else ""
-                print(f"MULTI-HUMAN: {n} people{extra}", flush=True)
+            candidates.append(Candidate(path, crops))
+
+            overlap_pairs = 0
+            for a in range(n):
+                for b in range(a + 1, n):
+                    if box_iou(crops[a].box, crops[b].box) > 0:
+                        overlap_pairs += 1
+
+            memory.remember(
+                path,
+                "review_candidate",
+                people=n,
+                overlap_pairs=overlap_pairs,
+                boxes=[list(c.box) for c in crops],
+            )
+
+            if n == 0:
+                zero_detected += 1
+                print("0 detected people -> REVIEW anyway; manual selections allowed", flush=True)
             elif n == 1:
-                singles += 1
-                print("1 person (no split needed)", flush=True)
+                one_detected += 1
+                print("1 detected person -> REVIEW", flush=True)
             else:
-                none += 1
-                print("no person", flush=True)
+                multi_detected += 1
+                extra = f" | {overlap_pairs} overlapping pair(s)" if overlap_pairs else ""
+                print(f"{n} detected people -> REVIEW{extra}", flush=True)
         except Exception as exc:
             failures += 1
+            memory.remember(path, "scan_error", error=f"{type(exc).__name__}: {exc}")
             print(f"ERROR: {type(exc).__name__}: {exc}", flush=True)
 
+    memory.save()
     elapsed = time.perf_counter() - started
+    scan_label = "image(s) with history ignored" if request.ignore_history else "new/modified image(s)"
     msg = (
-        f"Found {len(candidates)} images with multiple people. "
-        f"Single-person: {singles}. No person: {none}. Failures: {failures}. "
-        f"Scan time: {elapsed:.1f}s."
+        f"Images for review: {len(candidates)}. "
+        f"Scanned {scanned} {scan_label}; skipped {skipped} remembered unchanged image(s). "
+        f"Detections: zero={zero_detected}, one={one_detected}, multiple={multi_detected}. "
+        f"Failures: {failures}. Scan time: {elapsed:.1f}s."
     )
     print("-" * 86, flush=True)
     print(msg, flush=True)
@@ -362,8 +507,8 @@ def scan_folder_terminal(request: ScanRequest) -> tuple[list[Candidate], str]:
 class FolderChooser(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Multi-Human Cropper")
-        self.geometry("760x190")
+        self.title("Human Cropper")
+        self.geometry("800x210")
         self.resizable(True, False)
         self.folder = tk.StringVar()
         self.recursive = tk.BooleanVar(value=False)
@@ -385,11 +530,13 @@ class FolderChooser(tk.Tk):
         opts = ttk.Frame(frame)
         opts.pack(fill="x", pady=12)
         ttk.Checkbutton(opts, text="Include subfolders", variable=self.recursive).pack(side="left")
+        ttk.Button(opts, text="Forget Folder Memory", command=self.forget_memory).pack(side="right", padx=(8, 0))
+        ttk.Button(opts, text="Ignore History This Run", command=self.start_ignore_history).pack(side="right", padx=(8, 0))
         ttk.Button(opts, text="Start Detection", command=self.start).pack(side="right")
 
         ttk.Label(
             frame,
-            text="Only images containing 2+ detected people are sent to the manual crop review screen.",
+            text="Start Detection uses history. Ignore History This Run rescans everything once without deleting that history.",
             foreground="#666666",
         ).pack(anchor="w")
 
@@ -399,14 +546,44 @@ class FolderChooser(tk.Tk):
             self.folder.set(chosen)
             self.start()
 
-    def start(self):
+    def forget_memory(self):
         folder = Path(self.folder.get().strip())
         if not folder.is_dir():
             messagebox.showerror("Invalid folder", "Choose a valid directory first.")
             return
-        self.request = ScanRequest(folder, bool(self.recursive.get()))
+        memory = FolderMemory(folder)
+        count = len(memory.data.get("entries", {}))
+        if not messagebox.askyesno(
+            "Forget folder memory",
+            f"Forget {count} remembered image(s) for this folder?\n\n"
+            "The next run will inspect all eligible images again.",
+        ):
+            return
+        memory.forget()
+        messagebox.showinfo("Memory cleared", "Folder memory was cleared. The next scan will inspect everything again.")
+
+    def _start_with_history_mode(self, ignore_history: bool):
+        folder = Path(self.folder.get().strip())
+        if not folder.is_dir():
+            messagebox.showerror("Invalid folder", "Choose a valid directory first.")
+            return
+        self.request = ScanRequest(folder, bool(self.recursive.get()), ignore_history=ignore_history)
         self.quit()
         self.destroy()
+
+    def start(self):
+        self._start_with_history_mode(False)
+
+    def start_ignore_history(self):
+        # This button is usable directly even before Browse: choose a folder if
+        # needed, then bypass history for this scan without deleting it.
+        folder = Path(self.folder.get().strip())
+        if not folder.is_dir():
+            chosen = filedialog.askdirectory(title="Choose directory to rescan while ignoring history")
+            if not chosen:
+                return
+            self.folder.set(chosen)
+        self._start_with_history_mode(True)
 
 
 # ------------------------------ review UI ------------------------------
@@ -414,7 +591,7 @@ class FolderChooser(tk.Tk):
 class ReviewApp(tk.Tk):
     def __init__(self, folder: Path, candidates: list[Candidate], scan_summary: str):
         super().__init__()
-        self.title("Review Multi-Human Crops")
+        self.title("Review Human Crops")
         self.geometry("1450x900")
         self.minsize(1050, 700)
         self.folder = folder
@@ -493,6 +670,12 @@ class ReviewApp(tk.Tk):
         self.crop_inner.bind("<Configure>", lambda e: self.crop_canvas.configure(scrollregion=self.crop_canvas.bbox("all")))
         self.crop_canvas.bind("<Configure>", lambda e: self.crop_canvas.itemconfigure(self.crop_window, width=e.width))
 
+        # Mouse-wheel scrolling is active only while the pointer is over the
+        # independent-output pane (including its dynamically-created cards).
+        self.bind_all("<MouseWheel>", self._crop_mousewheel, add="+")
+        self.bind_all("<Button-4>", self._crop_mousewheel_linux, add="+")
+        self.bind_all("<Button-5>", self._crop_mousewheel_linux, add="+")
+
         bottom = ttk.Frame(self, padding=8)
         bottom.pack(fill="x")
         ttk.Label(bottom, textvariable=self.status_var).pack(side="left", fill="x", expand=True)
@@ -501,6 +684,47 @@ class ReviewApp(tk.Tk):
             text="A = approve   N/→ = next   P/← = previous   Del = delete box   Insert = add box   R = reset",
             foreground="#666666",
         ).pack(side="right")
+
+    def _widget_is_in_crop_pane(self, widget) -> bool:
+        current = widget
+        while current is not None:
+            if current in (self.crop_canvas, self.crop_inner):
+                return True
+            try:
+                parent_name = current.winfo_parent()
+                if not parent_name:
+                    break
+                current = current._nametowidget(parent_name)
+            except Exception:
+                break
+        return False
+
+    def _pointer_over_crop_pane(self, event) -> bool:
+        try:
+            widget = self.winfo_containing(event.x_root, event.y_root)
+        except Exception:
+            widget = None
+        return widget is not None and self._widget_is_in_crop_pane(widget)
+
+    def _crop_mousewheel(self, event):
+        if not self._pointer_over_crop_pane(event):
+            return None
+        delta = int(getattr(event, "delta", 0))
+        if delta == 0:
+            return "break"
+        # Windows normally reports +/-120 per notch; trackpads may report
+        # smaller values, so always move at least one unit.
+        steps = max(1, abs(delta) // 120)
+        direction = -1 if delta > 0 else 1
+        self.crop_canvas.yview_scroll(direction * steps * 3, "units")
+        return "break"
+
+    def _crop_mousewheel_linux(self, event):
+        if not self._pointer_over_crop_pane(event):
+            return None
+        direction = -1 if getattr(event, "num", None) == 4 else 1
+        self.crop_canvas.yview_scroll(direction * 3, "units")
+        return "break"
 
     def _bind_shortcuts(self):
         for seq in ("<a>", "<A>"):
@@ -516,7 +740,7 @@ class ReviewApp(tk.Tk):
         self.bind_all("<Escape>", lambda e: self.cancel_edit())
 
     def _nothing_found(self):
-        messagebox.showinfo("No multi-human images", self.scan_summary)
+        messagebox.showinfo("Nothing new to review", self.scan_summary)
         self.destroy()
 
     @property
@@ -532,7 +756,7 @@ class ReviewApp(tk.Tk):
         self.add_mode = False
         self.drag_mode = None
         self.file_var.set(
-            f"{self.index + 1}/{len(self.candidates)}  {self.item.path.name}  —  {len(self.item.crops)} person crops"
+            f"{self.index + 1}/{len(self.candidates)}  {self.item.path.name}  —  {len(self.item.crops)} crop selection(s)"
         )
         self._update_approval_label()
         self.redraw()
@@ -544,12 +768,19 @@ class ReviewApp(tk.Tk):
     def approve_current(self):
         if not self.candidates:
             return
-        if len(self.item.crops) < 2:
-            messagebox.showwarning("Need at least two crops", "This image must have at least two person selections to be split.")
-            return
+        # No minimum or maximum crop count. Zero selections is a valid reviewed
+        # state; it will be remembered but the source will be kept because no
+        # replacement output exists to justify recycling it.
         self.item.approved = True
         self._update_approval_label()
-        self.status_var.set(f"Approved {self.item.path.name}. Press N or → for the next image.")
+        if self.item.crops:
+            self.status_var.set(
+                f"Approved {self.item.path.name} with {len(self.item.crops)} crop(s). Press N or → for the next image."
+            )
+        else:
+            self.status_var.set(
+                f"Approved {self.item.path.name} with 0 crops. It will be remembered, but the original will be kept."
+            )
 
     def unapprove_current(self):
         if self.candidates:
@@ -839,9 +1070,10 @@ class ReviewApp(tk.Tk):
         total_crops = sum(len(c.crops) for c in approved)
         if not messagebox.askyesno(
             "Save approved person crops",
-            f"Save {total_crops} person images from {len(approved)} approved source images?\n\n"
-            "Each crop is read independently from the full-resolution original, so overlapping crops are safe.\n"
-            "Original source images will NOT be deleted or moved.",
+            f"Save {total_crops} crop image(s) from {len(approved)} approved source image(s)?\n\n"
+            "There is no crop-count restriction. Each crop is read independently from the full-resolution original, so overlaps are safe.\n"
+            "Sources with 1+ crops go to the Windows Recycle Bin only after ALL their crops save successfully.\n"
+            "An approved source with 0 crops is remembered but kept unchanged.",
         ):
             return
         self.action = "save"
@@ -849,18 +1081,42 @@ class ReviewApp(tk.Tk):
         self.destroy()
 
 
-def save_approved_terminal(folder: Path, candidates: list[Candidate]) -> tuple[int, int, list[str]]:
+def save_approved_terminal(folder: Path, candidates: list[Candidate]) -> tuple[int, int, int, int, list[str]]:
     ensure_console()
+    memory = FolderMemory(folder)
     approved = [c for c in candidates if c.approved]
+    rejected = [c for c in candidates if not c.approved]
+
+    # An image intentionally left unapproved is still considered reviewed/seen,
+    # so it remains skipped on later runs unless its source file changes.
+    for candidate in rejected:
+        memory.remember(
+            candidate.path, "review_rejected", people=len(candidate.crops),
+            boxes=[list(c.box) for c in candidate.crops],
+        )
+
     print("\n" + "=" * 86, flush=True)
-    print("SAVING APPROVED PERSON CROPS", flush=True)
+    print("SAVING APPROVED HUMAN CROPS", flush=True)
+    print("There is NO minimum or maximum number of crop selections.", flush=True)
     print("Each crop is taken independently from the original image; overlaps are intentionally allowed.", flush=True)
+    print("An original is recycled ONLY after every one of its 1+ crops saves successfully.", flush=True)
+    print("Approved images with 0 crops are remembered and left untouched.", flush=True)
     print("=" * 86, flush=True)
     created = 0
+    trashed = 0
+    kept_no_crops = 0
     failures: list[str] = []
 
     for i, candidate in enumerate(approved, 1):
         print(f"[{i}/{len(approved)}] {candidate.path.name} ...", flush=True)
+
+        if len(candidate.crops) == 0:
+            kept_no_crops += 1
+            memory.remember(candidate.path, "reviewed_no_crops", people=0, boxes=[])
+            print("    [0 CROPS] Reviewed/approved with no selections; original kept unchanged.", flush=True)
+            continue
+
+        outputs_this_source: list[Path] = []
         try:
             img = open_image(candidate.path)
             metadata = get_save_metadata(img)
@@ -872,18 +1128,47 @@ def save_approved_terminal(folder: Path, candidates: list[Candidate]) -> tuple[i
                 y0 = clamp(int(y0), 0, img.height)
                 y1 = clamp(int(y1), 0, img.height)
                 if x1 - x0 < MIN_BOX_SIDE or y1 - y0 < MIN_BOX_SIDE:
-                    raise RuntimeError(f"Person {n} selection is too small")
+                    raise RuntimeError(f"Crop {n} selection is too small")
                 crop = img.crop((x0, y0, x1, y1))
                 out = unique_path(candidate.path.with_name(f"{candidate.path.stem}_person_{n:02d}{ext}"))
                 save_cropped_image(crop, out, metadata)
-                created += 1
-                print(f"    [OK] Person {n}: {out.name}  ({x1-x0}x{y1-y0})", flush=True)
-        except Exception as exc:
-            failures.append(f"{candidate.path.name}: {exc}")
-            print(f"    [ERROR] {type(exc).__name__}: {exc}", flush=True)
+                outputs_this_source.append(out)
+                print(f"    [OK] Crop {n}: {out.name}  ({x1-x0}x{y1-y0})", flush=True)
 
+            # Every requested output now exists. Only now recycle the source.
+            send2trash(str(candidate.path))
+            trashed += 1
+            created += len(outputs_this_source)
+            memory.remember(
+                candidate.path, "saved_and_trashed", people=len(candidate.crops),
+                output_count=len(outputs_this_source),
+                outputs=[p.name for p in outputs_this_source],
+                boxes=[list(c.box) for c in candidate.crops],
+            )
+            print("    [RECYCLE BIN] Original source moved to trash", flush=True)
+        except Exception as exc:
+            # If anything fails before recycling, remove only outputs created
+            # during this attempt so the source remains the authoritative copy.
+            for out in outputs_this_source:
+                try:
+                    if out.exists():
+                        out.unlink()
+                except OSError:
+                    pass
+            failures.append(f"{candidate.path.name}: {exc}")
+            memory.remember(
+                candidate.path, "save_failed", people=len(candidate.crops),
+                error=f"{type(exc).__name__}: {exc}",
+                boxes=[list(c.box) for c in candidate.crops],
+            )
+            print(f"    [ERROR] {type(exc).__name__}: {exc}", flush=True)
+            print("    [SAFE] Original source was NOT recycled; partial outputs from this attempt were removed.", flush=True)
+
+    memory.save()
     print("-" * 86, flush=True)
-    print(f"Created: {created} person images", flush=True)
+    print(f"Created: {created} crop image(s)", flush=True)
+    print(f"Original source images moved to Recycle Bin: {trashed}", flush=True)
+    print(f"Approved with 0 crops and kept unchanged: {kept_no_crops}", flush=True)
     if failures:
         print(f"Failures: {len(failures)}", flush=True)
         for line in failures:
@@ -891,25 +1176,28 @@ def save_approved_terminal(folder: Path, candidates: list[Candidate]) -> tuple[i
     else:
         print("Failures: 0", flush=True)
     print(f"Output directory: {folder}", flush=True)
-    print("Original images were left untouched.", flush=True)
+    print(f"Memory file: {memory.path}", flush=True)
     print("=" * 86 + "\n", flush=True)
-    return created, len(approved), failures
+    return created, len(approved), trashed, kept_no_crops, failures
 
 
-def show_done(created: int, approved_count: int, failures: list[str]):
+def show_done(created: int, approved_count: int, trashed: int, kept_no_crops: int, failures: list[str]):
     root = tk.Tk()
     root.withdraw()
+    summary = (
+        f"Created {created} crop image(s) from {approved_count} approved source image(s).\n"
+        f"Moved {trashed} successfully processed original(s) to the Windows Recycle Bin.\n"
+        f"Kept {kept_no_crops} approved source image(s) unchanged because they had 0 crop selections."
+    )
     if failures:
         messagebox.showwarning(
             "Finished with issues",
-            f"Created {created} person images from {approved_count} approved source images.\n\n"
-            + "\n".join(failures[:10]),
+            summary + "\n\n" + "\n".join(failures[:10]),
         )
     else:
         messagebox.showinfo(
             "Finished",
-            f"Created {created} person images from {approved_count} approved source images.\n\n"
-            "Original images were left untouched.",
+            summary + "\n\nTheir history is remembered, and unchanged old images will be skipped on later runs.",
         )
     root.destroy()
 
@@ -927,8 +1215,8 @@ def main():
     review = ReviewApp(request.folder, candidates, summary)
     review.mainloop()
     if review.action == "save":
-        created, approved_count, failures = save_approved_terminal(request.folder, candidates)
-        show_done(created, approved_count, failures)
+        created, approved_count, trashed, kept_no_crops, failures = save_approved_terminal(request.folder, candidates)
+        show_done(created, approved_count, trashed, kept_no_crops, failures)
 
 
 if __name__ == "__main__":
