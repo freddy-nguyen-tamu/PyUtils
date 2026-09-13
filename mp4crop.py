@@ -8,6 +8,9 @@ import shutil
 import subprocess
 import sys
 import time
+import queue
+import threading
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
@@ -509,6 +512,24 @@ def run_ffmpeg_crop(
     *,
     copy_audio: bool,
 ) -> tuple[bool, str]:
+    """
+    Run FFmpeg without allowing its output pipes to deadlock.
+
+    Important implementation detail:
+    FFmpeg's diagnostic stream is redirected into the same continuously-drained
+    pipe as -progress.  An earlier version left stderr unread until the end,
+    which can block FFmpeg once the Windows pipe buffer fills.
+
+    A reader thread drains the pipe while this function:
+      - prints progress,
+      - prints a heartbeat after ~99%,
+      - watches the temporary file for activity, and
+      - terminates FFmpeg after an extended period with *no* observable
+        progress/output/file changes.
+
+    The original source is NOT touched here.  Recycling happens only later,
+    after this function succeeds and the output validates.
+    """
     ffmpeg, _ = find_ffmpeg()
     if not ffmpeg:
         return False, "ffmpeg not found on PATH."
@@ -523,6 +544,8 @@ def run_ffmpeg_crop(
     cmd = [
         ffmpeg,
         "-hide_banner",
+        "-loglevel", "warning",
+        "-nostdin",
         "-y",
         "-i", str(item.path),
         "-map", "0:v:0",
@@ -549,37 +572,203 @@ def run_ffmpeg_crop(
         str(tmp),
     ]
 
+    # Only declare a stall after five minutes with no FFmpeg output/progress
+    # AND no change to the temporary file.  This is intentionally conservative
+    # so large files are not killed merely for taking time to finalize.
+    STALL_TIMEOUT = 300.0
+    HEARTBEAT_INTERVAL = 15.0
+
+    proc = None
     try:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # Critical fix: continuously drain diagnostics through stdout.
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             bufsize=1,
         )
 
-        last_bucket = -1
-        assert proc.stdout is not None
-        for raw in proc.stdout:
-            line = raw.strip()
-            if line.startswith("out_time=") and item.duration > 0:
-                elapsed = parse_progress_seconds(line.split("=", 1)[1])
-                pct = max(0, min(100, int(elapsed / item.duration * 100)))
-                bucket = pct // 5
-                if bucket != last_bucket:
-                    last_bucket = bucket
-                    print(f"    progress {pct:3d}%", flush=True)
+        line_queue: queue.Queue[str | None] = queue.Queue()
+        diagnostics = deque(maxlen=80)
 
-        stderr = proc.stderr.read() if proc.stderr else ""
+        def _reader() -> None:
+            try:
+                assert proc is not None
+                assert proc.stdout is not None
+                for raw in proc.stdout:
+                    line_queue.put(raw)
+            finally:
+                line_queue.put(None)
+
+        reader = threading.Thread(
+            target=_reader,
+            name="ffmpeg-output-drain",
+            daemon=True,
+        )
+        reader.start()
+
+        last_bucket = -1
+        highest_pct = 0
+        reached_end = False
+
+        now = time.monotonic()
+        last_observed_activity = now
+        last_heartbeat = now
+        finalizing_since: float | None = None
+
+        last_tmp_size = -1
+        last_tmp_mtime_ns = -1
+        reader_eof = False
+
+        while True:
+            got_line = False
+            try:
+                raw = line_queue.get(timeout=1.0)
+                if raw is None:
+                    reader_eof = True
+                else:
+                    got_line = True
+                    now = time.monotonic()
+                    last_observed_activity = now
+
+                    line = raw.strip()
+                    if line:
+                        if line.startswith("out_time=") and item.duration > 0:
+                            elapsed = parse_progress_seconds(
+                                line.split("=", 1)[1]
+                            )
+                            pct = max(
+                                0,
+                                min(100, int(elapsed / item.duration * 100)),
+                            )
+                            highest_pct = max(highest_pct, pct)
+                            bucket = pct // 5
+                            if bucket != last_bucket:
+                                last_bucket = bucket
+                                print(
+                                    f"    progress {pct:3d}%",
+                                    flush=True,
+                                )
+
+                            if pct >= 99 and finalizing_since is None:
+                                finalizing_since = now
+                                print(
+                                    "    99% reached — FFmpeg is finishing "
+                                    "the stream / MP4 metadata...",
+                                    flush=True,
+                                )
+
+                        elif line == "progress=end":
+                            reached_end = True
+                            if finalizing_since is None:
+                                finalizing_since = now
+                            print(
+                                "    encoding complete — finalizing MP4...",
+                                flush=True,
+                            )
+
+                        elif not (
+                            line.startswith("frame=")
+                            or line.startswith("fps=")
+                            or line.startswith("stream_")
+                            or line.startswith("bitrate=")
+                            or line.startswith("total_size=")
+                            or line.startswith("out_time_us=")
+                            or line.startswith("out_time_ms=")
+                            or line.startswith("dup_frames=")
+                            or line.startswith("drop_frames=")
+                            or line.startswith("speed=")
+                            or line.startswith("progress=")
+                        ):
+                            # Keep a bounded diagnostic tail for useful errors.
+                            diagnostics.append(line)
+
+            except queue.Empty:
+                pass
+
+            # File changes count as real activity even when FFmpeg has no new
+            # progress line while it is flushing/finalizing.
+            try:
+                stat = tmp.stat()
+                size = int(stat.st_size)
+                mtime_ns = int(stat.st_mtime_ns)
+                if size != last_tmp_size or mtime_ns != last_tmp_mtime_ns:
+                    last_tmp_size = size
+                    last_tmp_mtime_ns = mtime_ns
+                    last_observed_activity = time.monotonic()
+            except OSError:
+                pass
+
+            now = time.monotonic()
+
+            # Once the visible progress is at the end, say something periodically
+            # so a healthy finalization never *looks* frozen.
+            if (
+                (highest_pct >= 99 or reached_end)
+                and now - last_heartbeat >= HEARTBEAT_INTERVAL
+            ):
+                last_heartbeat = now
+                wait_for = (
+                    now - finalizing_since
+                    if finalizing_since is not None
+                    else 0.0
+                )
+                print(
+                    f"    still finalizing... {wait_for:.0f}s "
+                    f"(FFmpeg process is alive)",
+                    flush=True,
+                )
+
+            rc = proc.poll()
+            if rc is not None and reader_eof:
+                break
+
+            # This catches genuine stalls while avoiding a false positive during
+            # ordinary finalization.  Because both the pipe and file metadata
+            # are monitored, healthy work resets the timer.
+            idle_for = now - last_observed_activity
+            if rc is None and idle_for >= STALL_TIMEOUT:
+                print(
+                    f"    STALL: no FFmpeg output/progress/file changes for "
+                    f"{int(idle_for)} seconds. Stopping FFmpeg safely...",
+                    flush=True,
+                )
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=10)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+                diag = "\n".join(diagnostics).strip()
+                detail = (
+                    f"FFmpeg appeared stalled for {int(idle_for)} seconds "
+                    "with no output or temporary-file changes."
+                )
+                if diag:
+                    detail += "\n\nLast FFmpeg messages:\n" + diag
+                return False, detail
+
+        reader.join(timeout=2.0)
         rc = proc.wait()
+
         if rc != 0:
             try:
                 tmp.unlink(missing_ok=True)
             except Exception:
                 pass
-            return False, stderr.strip() or f"ffmpeg exited with code {rc}"
+            diag = "\n".join(diagnostics).strip()
+            return False, diag or f"ffmpeg exited with code {rc}"
 
         if not tmp.exists() or tmp.stat().st_size <= 0:
             try:
@@ -587,6 +776,8 @@ def run_ffmpeg_crop(
             except Exception:
                 pass
             return False, "ffmpeg produced no usable output file."
+
+        print("    validating finished MP4...", flush=True)
 
         # Validate that ffprobe can read the result before replacing anything.
         check = ffprobe_basic(tmp)
@@ -598,9 +789,15 @@ def run_ffmpeg_crop(
             return False, "Output validation failed: duration could not be read."
 
         os.replace(tmp, output)
+        print("    MP4 finalized and validated.", flush=True)
         return True, "ok"
 
     except Exception as exc:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
         try:
             tmp.unlink(missing_ok=True)
         except Exception:
