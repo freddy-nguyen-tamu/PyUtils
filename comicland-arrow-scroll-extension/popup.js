@@ -9,8 +9,8 @@
   const button = document.getElementById("autoScroll");
   const status = document.getElementById("status");
 
-  let statusTimer = null;
   let currentTabId = null;
+  let statusTimer = null;
 
   function normalize(value) {
     const n = Number(value);
@@ -18,34 +18,18 @@
     return Math.min(MAX_SPEED, Math.max(MIN_SPEED, Math.round(n)));
   }
 
+  function updateButton(enabled) {
+    button.textContent = enabled ? "Stop Auto Scroll" : "Start Auto Scroll";
+    button.classList.toggle("on", Boolean(enabled));
+  }
+
   function showStatus(text) {
     status.textContent = text;
     clearTimeout(statusTimer);
-    statusTimer = setTimeout(() => {
-      status.textContent = "";
-    }, 1200);
+    statusTimer = setTimeout(() => status.textContent = "", 1200);
   }
 
-  function updateButton(enabled) {
-    if (enabled) {
-      button.textContent = "Stop Auto Scroll";
-      button.classList.add("on");
-    } else {
-      button.textContent = "Start Auto Scroll";
-      button.classList.remove("on");
-    }
-  }
-
-  function saveSpeed() {
-    const value = normalize(input.value);
-    input.value = value;
-
-    chrome.storage.sync.set({ scrollSpeed: value }, () => {
-      showStatus("Speed saved");
-    });
-  }
-
-  function sendToPage(message, callback) {
+  function send(message, callback) {
     if (currentTabId == null) {
       showStatus("Open a ComicLand chapter first");
       return;
@@ -57,9 +41,14 @@
         showStatus("Refresh the ComicLand chapter first");
         return;
       }
-
-      if (callback) callback(response || {});
+      callback?.(response || {});
     });
+  }
+
+  function saveSpeed() {
+    const value = normalize(input.value);
+    input.value = value;
+    chrome.storage.sync.set({ scrollSpeed: value }, () => showStatus("Speed saved"));
   }
 
   chrome.storage.sync.get({ scrollSpeed: DEFAULT_SPEED }, ({ scrollSpeed }) => {
@@ -68,8 +57,7 @@
 
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     currentTabId = tabs[0]?.id ?? null;
-
-    sendToPage({ type: "GET_AUTO_SCROLL_STATE" }, ({ enabled }) => {
+    send({ type: "GET_AUTO_SCROLL_STATE" }, ({ enabled }) => {
       updateButton(Boolean(enabled));
     });
   });
@@ -84,7 +72,7 @@
   });
 
   button.addEventListener("click", () => {
-    sendToPage({ type: "TOGGLE_AUTO_SCROLL" }, ({ enabled }) => {
+    send({ type: "TOGGLE_AUTO_SCROLL" }, ({ enabled }) => {
       updateButton(Boolean(enabled));
       showStatus(enabled ? "Auto Scroll started" : "Auto Scroll stopped");
     });

@@ -5,19 +5,11 @@
   const MIN_SPEED = 50;
   const MAX_SPEED = 5000;
   const BOTTOM_EPSILON = 2;
+  const AUTO_BUTTON_ID = "comicland-auto-scroll-button";
 
   let speed = DEFAULT_SPEED;
-
-  // Manual key state:
-  // -1 = Up Arrow held
-  //  0 = no arrow held
-  //  1 = Down Arrow held
   let manualDirection = 0;
-
-  // Auto Scroll is intentionally NOT persisted.
-  // Every newly loaded/navigated chapter starts OFF.
   let autoScrollEnabled = false;
-
   let frameId = null;
   let lastTime = null;
   let clickedUrl = null;
@@ -53,10 +45,7 @@
 
   function isAtBottom() {
     const el = getScroller();
-    return (
-      el.scrollTop + window.innerHeight >=
-      el.scrollHeight - BOTTOM_EPSILON
-    );
+    return el.scrollTop + window.innerHeight >= el.scrollHeight - BOTTOM_EPSILON;
   }
 
   function findNextChapterButton() {
@@ -75,10 +64,7 @@
   }
 
   function effectiveDirection() {
-    // Manual key input wins while held.
     if (manualDirection !== 0) return manualDirection;
-
-    // Auto Scroll only moves downward.
     return autoScrollEnabled ? 1 : 0;
   }
 
@@ -98,11 +84,8 @@
       return;
     }
 
-    if (lastTime == null) {
-      lastTime = now;
-    }
+    if (lastTime == null) lastTime = now;
 
-    // Avoid a giant jump after browser/tab inactivity.
     const elapsedSeconds = Math.min((now - lastTime) / 1000, 0.05);
     lastTime = now;
 
@@ -113,8 +96,6 @@
 
     const after = el.scrollTop;
 
-    // A downward attempt that causes no movement at the real bottom
-    // advances to the next chapter once.
     if (
       direction > 0 &&
       after <= before + 0.01 &&
@@ -126,12 +107,57 @@
     frameId = requestAnimationFrame(tick);
   }
 
+  function playIcon() {
+    return `
+      <svg xmlns="http://www.w3.org/2000/svg"
+           width="20" height="20" viewBox="0 0 24 24"
+           fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"
+           class="lucide lucide-play md:w-6 md:h-6"
+           aria-hidden="true">
+        <polygon points="6 3 20 12 6 21 6 3"></polygon>
+      </svg>
+    `;
+  }
+
+  function pauseIcon() {
+    return `
+      <svg xmlns="http://www.w3.org/2000/svg"
+           width="20" height="20" viewBox="0 0 24 24"
+           fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"
+           class="lucide lucide-pause md:w-6 md:h-6"
+           aria-hidden="true">
+        <rect x="6" y="4" width="4" height="16"></rect>
+        <rect x="14" y="4" width="4" height="16"></rect>
+      </svg>
+    `;
+  }
+
+  function updatePageButton() {
+    const button = document.getElementById(AUTO_BUTTON_ID);
+    if (!button) return;
+
+    button.title = autoScrollEnabled ? "Stop Auto Scroll" : "Start Auto Scroll";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-pressed", autoScrollEnabled ? "true" : "false");
+    button.innerHTML = autoScrollEnabled ? pauseIcon() : playIcon();
+
+    // Keep the site's normal button look, with a subtle active indicator.
+    if (autoScrollEnabled) {
+      button.style.outline = "2px solid #2563eb";
+      button.style.outlineOffset = "2px";
+    } else {
+      button.style.outline = "";
+      button.style.outlineOffset = "";
+    }
+  }
+
   function setAutoScroll(enabled) {
     autoScrollEnabled = Boolean(enabled);
+    updatePageButton();
 
-    if (autoScrollEnabled) {
-      ensureAnimation();
-    }
+    if (autoScrollEnabled) ensureAnimation();
 
     return autoScrollEnabled;
   }
@@ -141,51 +167,101 @@
     manualDirection = 0;
     clickedUrl = null;
     lastTime = null;
-
-    // Existing requestAnimationFrame will stop on its next tick.
+    updatePageButton();
   }
 
-  window.addEventListener(
-    "keydown",
-    (event) => {
-      if (isEditable(event.target)) return;
+  function createOrPlacePageButton() {
+    let button = document.getElementById(AUTO_BUTTON_ID);
+    const nextButton = findNextChapterButton();
+    const controls = nextButton?.parentElement;
 
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        manualDirection = 1;
-        ensureAnimation();
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        manualDirection = -1;
-        ensureAnimation();
-      }
-    },
-    true
-  );
+    if (!button) {
+      button = document.createElement("button");
+      button.id = AUTO_BUTTON_ID;
+      button.type = "button";
 
-  window.addEventListener(
-    "keyup",
-    (event) => {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        if (manualDirection === 1) manualDirection = 0;
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        if (manualDirection === -1) manualDirection = 0;
-      }
+      // Same classes as ComicLand's Previous / Next / Back to Top controls.
+      button.className =
+        "bg-white text-gray-900 shadow-lg hover:shadow-xl rounded-full " +
+        "p-3 md:p-4 hover:bg-gray-50 active:scale-95 transition-all duration-200";
 
-      // If Auto Scroll is on, continue automatically after arrow release.
+      button.addEventListener("mousedown", (event) => {
+        if (event.button === 0) {
+          // Do not let the global left-click-to-stop handler cancel this toggle.
+          event.stopPropagation();
+        }
+      }, true);
+
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setAutoScroll(!autoScrollEnabled);
+      }, true);
+    }
+
+    // Put the control in ComicLand's existing floating button row.
+    // Prefer immediately before Next Chapter.
+    if (controls && button.parentElement !== controls) {
+      controls.insertBefore(button, nextButton);
+    } else if (controls && button.nextSibling !== nextButton) {
+      controls.insertBefore(button, nextButton);
+    } else if (!button.isConnected) {
+      // Very short fallback during React re-render.
+      Object.assign(button.style, {
+        position: "fixed",
+        right: "12rem",
+        bottom: "1.5rem",
+        zIndex: "2147483647"
+      });
+      document.body.appendChild(button);
+    }
+
+    updatePageButton();
+  }
+
+  window.addEventListener("keydown", (event) => {
+    if (isEditable(event.target)) return;
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      manualDirection = 1;
       ensureAnimation();
-    },
-    true
-  );
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      manualDirection = -1;
+      ensureAnimation();
+    }
+  }, true);
+
+  window.addEventListener("keyup", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (manualDirection === 1) manualDirection = 0;
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (manualDirection === -1) manualDirection = 0;
+    }
+
+    ensureAnimation();
+  }, true);
+
+  // Any normal left mouse click anywhere else on the page stops Auto Scroll.
+  window.addEventListener("mousedown", (event) => {
+    if (
+      event.button === 0 &&
+      autoScrollEnabled &&
+      !(event.target instanceof Element &&
+        event.target.closest(`#${AUTO_BUTTON_ID}`))
+    ) {
+      setAutoScroll(false);
+    }
+  }, true);
 
   window.addEventListener("blur", () => {
-    // Don't leave a manual arrow "held" if focus is lost.
     manualDirection = 0;
     ensureAnimation();
   });
@@ -199,28 +275,28 @@
     }
 
     if (message.type === "TOGGLE_AUTO_SCROLL") {
-      const enabled = setAutoScroll(!autoScrollEnabled);
-      sendResponse({ enabled });
+      sendResponse({ enabled: setAutoScroll(!autoScrollEnabled) });
       return;
     }
 
     if (message.type === "SET_AUTO_SCROLL") {
-      const enabled = setAutoScroll(Boolean(message.enabled));
-      sendResponse({ enabled });
+      sendResponse({ enabled: setAutoScroll(Boolean(message.enabled)) });
     }
   });
 
-  // ComicLand is a React app. If it changes chapter client-side,
-  // turn Auto Scroll OFF for the new chapter.
   const observer = new MutationObserver(() => {
     if (location.href !== previousUrl) {
       previousUrl = location.href;
       resetForNewChapter();
     }
+
+    createOrPlacePageButton();
   });
 
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true
   });
+
+  createOrPlacePageButton();
 })();
