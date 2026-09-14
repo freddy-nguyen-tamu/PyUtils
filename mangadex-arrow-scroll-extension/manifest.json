@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "MangaDex Arrow Auto Scroll",
+  "version": "1.0.0",
+  "description": "Hold Up/Down arrows to scroll MangaDex chapters. Adjustable speed. Down at the bottom opens Next Chapter.",
+  "permissions": [
+    "storage"
+  ],
+  "action": {
+    "default_title": "Arrow Scroll Speed",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mangadex.org/chapter/*",
+        "https://www.mangadex.org/chapter/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

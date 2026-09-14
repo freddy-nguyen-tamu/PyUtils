@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arrow Scroll Speed</title>
+  <style>
+    body {
+      width: 240px;
+      margin: 0;
+      padding: 16px;
+      font: 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #191a1c;
+      color: #f3f3f3;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+
+    input {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #555;
+      border-radius: 6px;
+      background: #26272a;
+      color: #fff;
+      font: inherit;
+    }
+
+    .hint {
+      margin: 10px 0 0;
+      color: #bbb;
+      font-size: 12px;
+    }
+
+    #status {
+      min-height: 18px;
+      margin-top: 8px;
+      color: #8fd694;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>MangaDex Arrow Scroll</h1>
+
+  <label for="speed">Scroll speed (pixels/second)</label>
+  <input id="speed" type="number" min="50" max="5000" step="50" value="700">
+
+  <div id="status"></div>
+  <p class="hint">Hold ↓ to scroll down. Hold ↑ to scroll up. At the bottom, ↓ opens Next Chapter.</p>
+
+  <script src="popup.js"></script>
+</body>
+</html>
