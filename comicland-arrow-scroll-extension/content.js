@@ -7,17 +7,27 @@
   const BOTTOM_EPSILON = 2;
 
   let speed = DEFAULT_SPEED;
-  let direction = 0;
+
+  // Manual key state:
+  // -1 = Up Arrow held
+  //  0 = no arrow held
+  //  1 = Down Arrow held
+  let manualDirection = 0;
+
+  // Auto Scroll is intentionally NOT persisted.
+  // Every newly loaded/navigated chapter starts OFF.
+  let autoScrollEnabled = false;
+
   let frameId = null;
   let lastTime = null;
   let clickedUrl = null;
+  let previousUrl = location.href;
 
-  const clampSpeed = (value) => {
+  function clampSpeed(value) {
     const n = Number(value);
-    return Number.isFinite(n)
-      ? Math.min(MAX_SPEED, Math.max(MIN_SPEED, n))
-      : DEFAULT_SPEED;
-  };
+    if (!Number.isFinite(n)) return DEFAULT_SPEED;
+    return Math.min(MAX_SPEED, Math.max(MIN_SPEED, n));
+  }
 
   chrome.storage.sync.get({ scrollSpeed: DEFAULT_SPEED }, ({ scrollSpeed }) => {
     speed = clampSpeed(scrollSpeed);
@@ -31,104 +41,181 @@
 
   function isEditable(target) {
     return target instanceof Element && Boolean(
-      target.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]')
+      target.closest(
+        'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]'
+      )
     );
   }
 
-  function scroller() {
+  function getScroller() {
     return document.scrollingElement || document.documentElement;
   }
 
-  function atBottom() {
-    const el = scroller();
-    return el.scrollTop + window.innerHeight >= el.scrollHeight - BOTTOM_EPSILON;
+  function isAtBottom() {
+    const el = getScroller();
+    return (
+      el.scrollTop + window.innerHeight >=
+      el.scrollHeight - BOTTOM_EPSILON
+    );
+  }
+
+  function findNextChapterButton() {
+    return document.querySelector('button[title="Next Chapter"]');
   }
 
   function clickNextChapterOnce() {
-    if (clickedUrl === location.href) return;
+    if (clickedUrl === location.href) return false;
 
-    const button = document.querySelector('button[title="Next Chapter"]');
-    if (!button || button.disabled) return;
+    const button = findNextChapterButton();
+    if (!button || button.disabled) return false;
 
     clickedUrl = location.href;
     button.click();
+    return true;
+  }
+
+  function effectiveDirection() {
+    // Manual key input wins while held.
+    if (manualDirection !== 0) return manualDirection;
+
+    // Auto Scroll only moves downward.
+    return autoScrollEnabled ? 1 : 0;
+  }
+
+  function ensureAnimation() {
+    if (frameId == null && effectiveDirection() !== 0) {
+      lastTime = null;
+      frameId = requestAnimationFrame(tick);
+    }
   }
 
   function tick(now) {
+    const direction = effectiveDirection();
+
     if (direction === 0) {
       frameId = null;
       lastTime = null;
       return;
     }
 
-    if (lastTime == null) lastTime = now;
+    if (lastTime == null) {
+      lastTime = now;
+    }
 
-    const elapsed = Math.min((now - lastTime) / 1000, 0.05);
+    // Avoid a giant jump after browser/tab inactivity.
+    const elapsedSeconds = Math.min((now - lastTime) / 1000, 0.05);
     lastTime = now;
 
-    const el = scroller();
+    const el = getScroller();
     const before = el.scrollTop;
 
-    window.scrollBy(0, direction * speed * elapsed);
+    window.scrollBy(0, direction * speed * elapsedSeconds);
 
     const after = el.scrollTop;
 
-    if (direction > 0 && after <= before + 0.01 && atBottom()) {
+    // A downward attempt that causes no movement at the real bottom
+    // advances to the next chapter once.
+    if (
+      direction > 0 &&
+      after <= before + 0.01 &&
+      isAtBottom()
+    ) {
       clickNextChapterOnce();
     }
 
     frameId = requestAnimationFrame(tick);
   }
 
-  function start(dir) {
-    direction = dir;
-    if (frameId == null) {
-      lastTime = null;
-      frameId = requestAnimationFrame(tick);
+  function setAutoScroll(enabled) {
+    autoScrollEnabled = Boolean(enabled);
+
+    if (autoScrollEnabled) {
+      ensureAnimation();
     }
+
+    return autoScrollEnabled;
   }
 
-  function stop(dir) {
-    if (direction === dir) direction = 0;
+  function resetForNewChapter() {
+    autoScrollEnabled = false;
+    manualDirection = 0;
+    clickedUrl = null;
+    lastTime = null;
+
+    // Existing requestAnimationFrame will stop on its next tick.
   }
 
-  window.addEventListener("keydown", (event) => {
-    if (isEditable(event.target)) return;
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (isEditable(event.target)) return;
 
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      start(1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      start(-1);
-    }
-  }, true);
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        manualDirection = 1;
+        ensureAnimation();
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        manualDirection = -1;
+        ensureAnimation();
+      }
+    },
+    true
+  );
 
-  window.addEventListener("keyup", (event) => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      stop(1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      stop(-1);
-    }
-  }, true);
+  window.addEventListener(
+    "keyup",
+    (event) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (manualDirection === 1) manualDirection = 0;
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (manualDirection === -1) manualDirection = 0;
+      }
+
+      // If Auto Scroll is on, continue automatically after arrow release.
+      ensureAnimation();
+    },
+    true
+  );
 
   window.addEventListener("blur", () => {
-    direction = 0;
+    // Don't leave a manual arrow "held" if focus is lost.
+    manualDirection = 0;
+    ensureAnimation();
   });
 
-  let previousUrl = location.href;
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || typeof message.type !== "string") return;
+
+    if (message.type === "GET_AUTO_SCROLL_STATE") {
+      sendResponse({ enabled: autoScrollEnabled });
+      return;
+    }
+
+    if (message.type === "TOGGLE_AUTO_SCROLL") {
+      const enabled = setAutoScroll(!autoScrollEnabled);
+      sendResponse({ enabled });
+      return;
+    }
+
+    if (message.type === "SET_AUTO_SCROLL") {
+      const enabled = setAutoScroll(Boolean(message.enabled));
+      sendResponse({ enabled });
+    }
+  });
+
+  // ComicLand is a React app. If it changes chapter client-side,
+  // turn Auto Scroll OFF for the new chapter.
   const observer = new MutationObserver(() => {
     if (location.href !== previousUrl) {
       previousUrl = location.href;
-      clickedUrl = null;
-      direction = 0;
-      lastTime = null;
+      resetForNewChapter();
     }
   });
 
