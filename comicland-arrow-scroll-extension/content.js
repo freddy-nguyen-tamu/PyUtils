@@ -14,6 +14,7 @@
   let lastTime = null;
   let clickedUrl = null;
   let previousUrl = location.href;
+  let placementScheduled = false;
 
   function clampSpeed(value) {
     const n = Number(value);
@@ -96,54 +97,52 @@
 
     const after = el.scrollTop;
 
-    if (
-      direction > 0 &&
-      after <= before + 0.01 &&
-      isAtBottom()
-    ) {
+    if (direction > 0 && after <= before + 0.01 && isAtBottom()) {
       clickNextChapterOnce();
     }
 
     frameId = requestAnimationFrame(tick);
   }
 
-  function playIcon() {
-    return `
-      <svg xmlns="http://www.w3.org/2000/svg"
-           width="20" height="20" viewBox="0 0 24 24"
-           fill="none" stroke="currentColor" stroke-width="2"
-           stroke-linecap="round" stroke-linejoin="round"
-           class="lucide lucide-play md:w-6 md:h-6"
-           aria-hidden="true">
-        <polygon points="6 3 20 12 6 21 6 3"></polygon>
-      </svg>
-    `;
-  }
+  const PLAY_ICON = `
+    <svg xmlns="http://www.w3.org/2000/svg"
+         width="20" height="20" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round"
+         class="lucide lucide-play md:w-6 md:h-6"
+         aria-hidden="true">
+      <polygon points="6 3 20 12 6 21 6 3"></polygon>
+    </svg>
+  `;
 
-  function pauseIcon() {
-    return `
-      <svg xmlns="http://www.w3.org/2000/svg"
-           width="20" height="20" viewBox="0 0 24 24"
-           fill="none" stroke="currentColor" stroke-width="2"
-           stroke-linecap="round" stroke-linejoin="round"
-           class="lucide lucide-pause md:w-6 md:h-6"
-           aria-hidden="true">
-        <rect x="6" y="4" width="4" height="16"></rect>
-        <rect x="14" y="4" width="4" height="16"></rect>
-      </svg>
-    `;
-  }
+  const PAUSE_ICON = `
+    <svg xmlns="http://www.w3.org/2000/svg"
+         width="20" height="20" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round"
+         class="lucide lucide-pause md:w-6 md:h-6"
+         aria-hidden="true">
+      <rect x="6" y="4" width="4" height="16"></rect>
+      <rect x="14" y="4" width="4" height="16"></rect>
+    </svg>
+  `;
 
   function updatePageButton() {
     const button = document.getElementById(AUTO_BUTTON_ID);
     if (!button) return;
 
+    const desiredState = autoScrollEnabled ? "on" : "off";
+
+    // CRITICAL: do nothing if the visual state is already correct.
+    // This prevents our MutationObserver from reacting to our own DOM writes forever.
+    if (button.dataset.autoScrollState === desiredState) return;
+
+    button.dataset.autoScrollState = desiredState;
     button.title = autoScrollEnabled ? "Stop Auto Scroll" : "Start Auto Scroll";
     button.setAttribute("aria-label", button.title);
     button.setAttribute("aria-pressed", autoScrollEnabled ? "true" : "false");
-    button.innerHTML = autoScrollEnabled ? pauseIcon() : playIcon();
+    button.innerHTML = autoScrollEnabled ? PAUSE_ICON : PLAY_ICON;
 
-    // Keep the site's normal button look, with a subtle active indicator.
     if (autoScrollEnabled) {
       button.style.outline = "2px solid #2563eb";
       button.style.outlineOffset = "2px";
@@ -170,53 +169,58 @@
     updatePageButton();
   }
 
-  function createOrPlacePageButton() {
-    let button = document.getElementById(AUTO_BUTTON_ID);
+  function buildPageButton() {
+    const button = document.createElement("button");
+    button.id = AUTO_BUTTON_ID;
+    button.type = "button";
+    button.className =
+      "bg-white text-gray-900 shadow-lg hover:shadow-xl rounded-full " +
+      "p-3 md:p-4 hover:bg-gray-50 active:scale-95 transition-all duration-200";
+
+    button.addEventListener("mousedown", (event) => {
+      if (event.button === 0) {
+        event.stopPropagation();
+      }
+    }, true);
+
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setAutoScroll(!autoScrollEnabled);
+    }, true);
+
+    return button;
+  }
+
+  function ensurePageButton() {
     const nextButton = findNextChapterButton();
-    const controls = nextButton?.parentElement;
+    if (!nextButton) return;
+
+    const controls = nextButton.parentElement;
+    if (!controls) return;
+
+    let button = document.getElementById(AUTO_BUTTON_ID);
 
     if (!button) {
-      button = document.createElement("button");
-      button.id = AUTO_BUTTON_ID;
-      button.type = "button";
-
-      // Same classes as ComicLand's Previous / Next / Back to Top controls.
-      button.className =
-        "bg-white text-gray-900 shadow-lg hover:shadow-xl rounded-full " +
-        "p-3 md:p-4 hover:bg-gray-50 active:scale-95 transition-all duration-200";
-
-      button.addEventListener("mousedown", (event) => {
-        if (event.button === 0) {
-          // Do not let the global left-click-to-stop handler cancel this toggle.
-          event.stopPropagation();
-        }
-      }, true);
-
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        setAutoScroll(!autoScrollEnabled);
-      }, true);
+      button = buildPageButton();
     }
 
-    // Put the control in ComicLand's existing floating button row.
-    // Prefer immediately before Next Chapter.
-    if (controls && button.parentElement !== controls) {
+    // Only move/insert it when actually needed.
+    if (button.parentElement !== controls || button.nextSibling !== nextButton) {
       controls.insertBefore(button, nextButton);
-    } else if (controls && button.nextSibling !== nextButton) {
-      controls.insertBefore(button, nextButton);
-    } else if (!button.isConnected) {
-      // Very short fallback during React re-render.
-      Object.assign(button.style, {
-        position: "fixed",
-        right: "12rem",
-        bottom: "1.5rem",
-        zIndex: "2147483647"
-      });
-      document.body.appendChild(button);
     }
 
     updatePageButton();
+  }
+
+  function scheduleEnsurePageButton() {
+    if (placementScheduled) return;
+    placementScheduled = true;
+
+    requestAnimationFrame(() => {
+      placementScheduled = false;
+      ensurePageButton();
+    });
   }
 
   window.addEventListener("keydown", (event) => {
@@ -249,13 +253,15 @@
     ensureAnimation();
   }, true);
 
-  // Any normal left mouse click anywhere else on the page stops Auto Scroll.
+  // Any left-click outside the Auto Scroll button stops Auto Scroll.
   window.addEventListener("mousedown", (event) => {
     if (
       event.button === 0 &&
       autoScrollEnabled &&
-      !(event.target instanceof Element &&
-        event.target.closest(`#${AUTO_BUTTON_ID}`))
+      !(
+        event.target instanceof Element &&
+        event.target.closest(`#${AUTO_BUTTON_ID}`)
+      )
     ) {
       setAutoScroll(false);
     }
@@ -284,19 +290,22 @@
     }
   });
 
+  // Observe React page replacement, but never blindly rewrite our own button.
   const observer = new MutationObserver(() => {
     if (location.href !== previousUrl) {
       previousUrl = location.href;
       resetForNewChapter();
     }
 
-    createOrPlacePageButton();
+    // Schedule at most one placement check per animation frame.
+    // ensurePageButton itself only writes when something is actually missing/moved.
+    scheduleEnsurePageButton();
   });
 
-  observer.observe(document.documentElement, {
+  observer.observe(document.body, {
     childList: true,
     subtree: true
   });
 
-  createOrPlacePageButton();
+  ensurePageButton();
 })();
