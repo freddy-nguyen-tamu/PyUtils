@@ -23,6 +23,7 @@
   let navigating = false;
   let bottomSince = 0;
   let lastFrame = 0;
+  let manualScrollPauseUntil = 0;
 
   const clampSpeed = (value) => {
     const number = Number(value);
@@ -138,7 +139,7 @@
 
     const direction = manualDirection !== 0
       ? manualDirection
-      : (autoScrollEnabled ? 1 : 0);
+      : (autoScrollEnabled && now >= manualScrollPauseUntil ? 1 : 0);
 
     if (direction !== 0 && !navigating) {
       const before = window.scrollY;
@@ -229,20 +230,69 @@
   window.addEventListener("keydown", onKeyDown, true);
   window.addEventListener("keyup", onKeyUp, true);
 
-  const installMouseBottomAdvance = () => {
-    // Native wheel/touch scrolling is left untouched. A further downward wheel
-    // attempt while already at the bottom advances to the next chapter.
+  const installNativeScrollProtection = () => {
+    // The site's JavaScript may leave wheel/touch listeners attached to
+    // window/document even after we replace the visible DOM. Intercept those
+    // events first, stop the site's handlers, but DO NOT preventDefault().
+    // That leaves the browser's own native wheel/touch scrolling intact.
+    const pauseForManualScroll = () => {
+      manualScrollPauseUntil = performance.now() + 900;
+      bottomSince = 0;
+    };
+
     window.addEventListener(
       "wheel",
       (event) => {
-        if (event.deltaY <= 0 || navigating) return;
-        window.setTimeout(() => {
-          if (atBottom()) {
-            const started = performance.now();
-            if (!bottomSince) bottomSince = started;
-            window.setTimeout(() => maybeAdvance(performance.now(), true), AUTO_NEXT_DELAY_MS);
-          }
-        }, 0);
+        event.stopImmediatePropagation();
+        pauseForManualScroll();
+
+        // A downward wheel attempt while already at the bottom advances.
+        if (event.deltaY > 0 && !navigating) {
+          window.setTimeout(() => {
+            if (atBottom()) {
+              const started = performance.now();
+              if (!bottomSince) bottomSince = started;
+              window.setTimeout(
+                () => maybeAdvance(performance.now(), true),
+                AUTO_NEXT_DELAY_MS
+              );
+            }
+          }, 0);
+        }
+      },
+      { passive: true, capture: true }
+    );
+
+    window.addEventListener(
+      "touchstart",
+      (event) => {
+        event.stopImmediatePropagation();
+        pauseForManualScroll();
+      },
+      { passive: true, capture: true }
+    );
+
+    window.addEventListener(
+      "touchmove",
+      (event) => {
+        event.stopImmediatePropagation();
+        pauseForManualScroll();
+      },
+      { passive: true, capture: true }
+    );
+
+    // Scrollbar dragging, mouse-wheel scrolling, PageUp/PageDown from browser
+    // UI, and other native scroll mechanisms all trigger this. Keep auto-scroll
+    // from immediately fighting the user's new position.
+    window.addEventListener(
+      "scroll",
+      () => {
+        if (manualDirection === 0) {
+          manualScrollPauseUntil = Math.max(
+            manualScrollPauseUntil,
+            performance.now() + 250
+          );
+        }
       },
       { passive: true, capture: true }
     );
@@ -307,7 +357,7 @@
       bottomSince = 0;
     });
 
-    installMouseBottomAdvance();
+    installNativeScrollProtection();
 
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== "local") return;
