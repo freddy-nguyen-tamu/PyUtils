@@ -1,0 +1,83 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: Canvas;
+  color: CanvasText;
+}
+
+main {
+  padding: 16px;
+}
+
+h1 {
+  margin: 0 0 16px;
+  font-size: 18px;
+}
+
+label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.speed-row {
+  display: grid;
+  grid-template-columns: 1fr 92px;
+  gap: 10px;
+  align-items: center;
+}
+
+input[type="range"] {
+  width: 100%;
+}
+
+input[type="number"] {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 7px;
+}
+
+.speed-label,
+.note {
+  margin: 7px 0 0;
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.keys {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+}
+
+.keys > div {
+  display: grid;
+  grid-template-columns: 28px 28px 1fr;
+  gap: 5px;
+  align-items: center;
+  font-size: 13px;
+}
+
+kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  border-radius: 5px;
+  font: inherit;
+  font-weight: 700;
+}
+
+.note {
+  margin-top: 14px;
+  line-height: 1.4;
+}

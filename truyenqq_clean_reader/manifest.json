@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "TruyenQQ Clean Reader",
+  "version": "1.0.0",
+  "description": "Replaces TruyenQQ chapter pages with a lightweight, keyboard-controlled image reader.",
+  "permissions": [
+    "storage"
+  ],
+  "action": {
+    "default_title": "TruyenQQ Clean Reader",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://truyenqq.com.vn/*",
+        "*://www.truyenqq.com.vn/*"
+      ],
+      "css": [
+        "reader.css"
+      ],
+      "js": [
+        "reader.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}

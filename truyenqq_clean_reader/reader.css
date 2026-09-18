@@ -1,0 +1,41 @@
+html[data-tqq-reader-booting="1"] body {
+  visibility: hidden !important;
+}
+
+html[data-tqq-reader-ready="1"],
+html[data-tqq-reader-ready="1"] body {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100% !important;
+  min-height: 100% !important;
+  background: #111 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  scroll-behavior: auto !important;
+  scroll-snap-type: none !important;
+  overscroll-behavior: none !important;
+}
+
+html[data-tqq-reader-ready="1"] body {
+  visibility: visible !important;
+}
+
+html[data-tqq-reader-ready="1"] #tqq-clean-reader {
+  display: block !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+html[data-tqq-reader-ready="1"] #tqq-clean-reader img {
+  display: block !important;
+  width: auto !important;
+  max-width: 100vw !important;
+  height: auto !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  transform: none !important;
+  animation: none !important;
+}

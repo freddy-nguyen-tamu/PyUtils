@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "TruyenQQ Arrow Controls",
+  "version": "1.0.0",
+  "description": "Fast keyboard scrolling and chapter navigation for TruyenQQ.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "*://truyenqq.com.vn/*",
+    "*://www.truyenqq.com.vn/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://truyenqq.com.vn/*",
+        "*://www.truyenqq.com.vn/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "TruyenQQ Arrow Controls",
+    "default_popup": "popup.html"
+  }
+}

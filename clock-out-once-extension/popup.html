@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Schedule Clock Out</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <div class="eyebrow">One-Time Clock Out</div>
+    <h1>Schedule Clock Out</h1>
+    <p class="sub">Set one local date and time. Intern Hub will show the live countdown.</p>
+
+    <label for="target">Clock-out date & time</label>
+    <input id="target" type="datetime-local" step="1">
+
+    <div class="buttons">
+      <button id="set" class="primary">Set</button>
+      <button id="cancel" class="secondary">Cancel</button>
+    </div>
+
+    <section id="status" class="status hidden">
+      <div id="status-label" class="status-label"></div>
+      <div id="countdown" class="countdown">--:--:--</div>
+      <div id="target-label" class="target-label"></div>
+    </section>
+
+    <div id="message" class="message"></div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

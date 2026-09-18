@@ -1,0 +1,42 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 300px;
+}
+
+main {
+  padding: 14px;
+}
+
+label {
+  display: block;
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.speed-row {
+  display: grid;
+  grid-template-columns: 1fr 74px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+input[type="range"] {
+  width: 100%;
+}
+
+input[type="number"] {
+  box-sizing: border-box;
+  width: 74px;
+}
+
+p {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.72;
+}

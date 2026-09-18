@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TruyenQQ Arrow Controls</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Arrow Controls</h1>
+
+    <label for="speed">Scroll speed</label>
+    <div class="speed-row">
+      <input id="speed" type="range" min="100" max="5000" step="50">
+      <input id="speedNumber" type="number" min="100" max="5000" step="50" aria-label="Scroll speed in pixels per second">
+    </div>
+    <p id="speedLabel" class="speed-label"></p>
+
+    <div class="keys">
+      <div><kbd>↑</kbd><kbd>↓</kbd><span>Hold to scroll</span></div>
+      <div><kbd>←</kbd><kbd>→</kbd><span>Previous / next chapter</span></div>
+    </div>
+
+    <p class="note">Arrow keys override TruyenQQ's built-in keyboard handler on chapter pages.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

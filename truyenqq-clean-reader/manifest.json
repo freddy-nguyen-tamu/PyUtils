@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "TruyenQQ Clean Auto Reader",
+  "version": "1.0.0",
+  "description": "Minimal image-only reader with keyboard navigation and persistent auto-scroll.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://truyenqq.com.vn/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://truyenqq.com.vn/*/chapter-*"
+      ],
+      "js": ["reader.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Reader speed",
+    "default_popup": "popup.html"
+  }
+}

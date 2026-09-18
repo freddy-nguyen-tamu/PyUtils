@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "One-Time Clock Out",
+  "version": "1.0.0",
+  "description": "Schedule one Clock Out click on Intern Hub and show a live countdown on the page.",
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Schedule Clock Out",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/intern-hub.html*",
+        "https://*/intern-hub.html*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

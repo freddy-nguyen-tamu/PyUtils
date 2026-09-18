@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ToonGod Simple Reader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Simple Reader</h1>
+    <p class="keys"><kbd>←</kbd> previous <span>·</span> <kbd>→</kbd> next <span>·</span> <kbd>Space</kbd> auto-scroll</p>
+
+    <label for="speed">Auto-scroll rate</label>
+    <div class="speed-row">
+      <input id="speed" type="range" min="10" max="500" step="5" value="90">
+      <div class="number-wrap">
+        <input id="speedNumber" type="number" min="10" max="500" step="5" value="90" aria-label="Auto-scroll pixels per second">
+        <span>px/s</span>
+      </div>
+    </div>
+
+    <p id="saved" aria-live="polite">Saved automatically</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

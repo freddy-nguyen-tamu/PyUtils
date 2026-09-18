@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "ToonGod Simple Reader",
+  "version": "1.1.0",
+  "description": "Replaces ToonGod's chapter reader with a lightweight centered reader, keyboard chapter navigation, and adjustable auto-scroll.",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["*://*.toongod.org/*"],
+  "action": {
+    "default_title": "ToonGod Simple Reader",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.toongod.org/webtoon/*/chapter-*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}
