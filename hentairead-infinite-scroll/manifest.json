@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "HentaiRead Infinite Scroll",
+  "version": "1.0.0",
+  "description": "Forces HentaiRead chapters into continuous All Pages mode from page 1 to the final page.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://hentairead.com/hentai/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}

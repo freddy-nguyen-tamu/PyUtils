@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Simple Manga Reader",
+  "version": "1.0.0",
+  "description": "Replaces the site's reader with a minimal centered image reader and reliable keyboard/autoscroll controls.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://a-bride-s-story.online/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://a-bride-s-story.online/comic/*"],
+      "js": ["reader.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Reader settings",
+    "default_popup": "popup.html"
+  }
+}

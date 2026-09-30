@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "MangaFreak Smooth Reader",
+  "version": "1.0.0",
+  "description": "Minimal centered long-strip reader with native scrolling, keyboard chapter navigation, and persistent auto-scroll.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "*://*.mangafreak.me/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://*.mangafreak.me/Read*"],
+      "js": ["reader.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Smooth Reader speed",
+    "default_popup": "popup.html"
+  }
+}

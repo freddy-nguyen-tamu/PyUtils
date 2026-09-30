@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reader settings</title>
+  <style>
+    body {
+      width: 260px;
+      margin: 0;
+      padding: 16px;
+      font: 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #171717;
+      color: #f2f2f2;
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    input[type="range"] {
+      width: 100%;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+    #speedValue {
+      font-variant-numeric: tabular-nums;
+      color: #cfcfcf;
+    }
+    .hint {
+      margin-top: 12px;
+      color: #aaa;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <label for="speed">Auto-scroll speed</label>
+    <span id="speedValue">80 px/s</span>
+  </div>
+  <input id="speed" type="range" min="10" max="500" step="5" value="80">
+  <div class="hint">Enter toggles auto-scroll. ↑/↓ scroll. ←/→ change chapter.</div>
+  <script src="popup.js"></script>
+</body>
+</html>

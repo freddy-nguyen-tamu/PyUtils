@@ -1,0 +1,12 @@
+:root { color-scheme: light dark; }
+body {
+  width: 260px;
+  margin: 0;
+  padding: 16px;
+  font: 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+label { display: block; margin-bottom: 10px; font-weight: 600; }
+.row { display: flex; align-items: center; gap: 10px; }
+input[type="range"] { flex: 1; }
+output { min-width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
+.hint { margin-top: 6px; opacity: .65; font-size: 12px; }

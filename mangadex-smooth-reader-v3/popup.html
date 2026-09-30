@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MangaDex Smooth Reader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <div class="top">
+      <strong>Auto-scroll</strong>
+      <label class="switch">
+        <input id="enabled" type="checkbox">
+        <span></span>
+      </label>
+    </div>
+
+    <label class="field">
+      <span>Auto-scroll speed</span>
+      <div class="control">
+        <input id="speed" type="range" min="10" max="800" step="5">
+        <input id="speedNumber" type="number" min="5" max="2000" step="5">
+        <em>px/s</em>
+      </div>
+    </label>
+
+    <label class="field">
+      <span>Up/Down key distance</span>
+      <div class="control">
+        <input id="keyScroll" type="range" min="100" max="1200" step="20">
+        <input id="keyScrollNumber" type="number" min="50" max="3000" step="20">
+        <em>px</em>
+      </div>
+    </label>
+
+    <label class="field">
+      <span>Reader width</span>
+      <div class="control">
+        <input id="width" type="range" min="600" max="1800" step="20">
+        <input id="widthNumber" type="number" min="420" max="2400" step="20">
+        <em>px</em>
+      </div>
+    </label>
+
+    <div class="keys">
+      <div><kbd>Enter</kbd> toggle auto-scroll</div>
+      <div><kbd>←</kbd><kbd>→</kbd> previous / next chapter</div>
+      <div><kbd>↑</kbd><kbd>↓</kbd> scroll</div>
+    </div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

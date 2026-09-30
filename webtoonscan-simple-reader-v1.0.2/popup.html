@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Simple Reader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <label for="rate">Scroll rate</label>
+    <div class="rate-row">
+      <input id="rate" type="range" min="20" max="2000" step="10">
+      <input id="rateNumber" type="number" min="20" max="2000" step="10" inputmode="numeric">
+      <span>px/s</span>
+    </div>
+    <p>Enter toggles auto-scroll. Hold ↑ or ↓ for manual keyboard scrolling.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

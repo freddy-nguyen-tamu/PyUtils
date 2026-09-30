@@ -1,0 +1,212 @@
+/* YouTube Shorts Clean View
+   Only takes over the visual layout while on /shorts/* and only when Chrome is
+   NOT in browser fullscreen (F11). JavaScript toggles the root classes. */
+
+html.qs-shorts-active {
+  --qs-vh: 100dvh;
+  --qs-reel-scale: 1;
+}
+
+/* ---------- Non-F11 clean layout ---------- */
+html.qs-shorts-active.qs-shorts-compact,
+html.qs-shorts-active.qs-shorts-compact body {
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+}
+
+html.qs-shorts-active.qs-shorts-compact ytd-masthead,
+html.qs-shorts-active.qs-shorts-compact ytd-mini-guide-renderer,
+html.qs-shorts-active.qs-shorts-compact #guide,
+html.qs-shorts-active.qs-shorts-compact #guide-spacer,
+html.qs-shorts-active.qs-shorts-compact ytd-shorts > #header,
+html.qs-shorts-active.qs-shorts-compact ytd-shorts > .navigation-container {
+  display: none !important;
+}
+
+html.qs-shorts-active.qs-shorts-compact ytd-app,
+html.qs-shorts-active.qs-shorts-compact ytd-app > #content,
+html.qs-shorts-active.qs-shorts-compact ytd-page-manager {
+  margin: 0 !important;
+  padding: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  max-width: none !important;
+}
+
+html.qs-shorts-active.qs-shorts-compact ytd-shorts {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2 !important;
+  width: 100vw !important;
+  height: var(--qs-vh) !important;
+  min-height: var(--qs-vh) !important;
+  max-height: var(--qs-vh) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: #080808 !important;
+}
+
+html.qs-shorts-active.qs-shorts-compact ytd-shorts #shorts-container {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: var(--qs-vh) !important;
+  min-height: var(--qs-vh) !important;
+  max-height: var(--qs-vh) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  scroll-behavior: auto !important;
+  scroll-snap-type: y mandatory !important;
+  overscroll-behavior: none !important;
+  scrollbar-width: none !important;
+}
+
+html.qs-shorts-active.qs-shorts-compact ytd-shorts #shorts-container::-webkit-scrollbar {
+  display: none !important;
+}
+
+html.qs-shorts-active.qs-shorts-compact ytd-shorts #shorts-inner-container {
+  position: relative !important;
+  width: 100vw !important;
+  min-width: 100vw !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Each logical Short is exactly one viewport high. The live renderer remains
+   attached to YouTube's current sequence item, so YouTube keeps ownership of
+   playback/state while we own the page geometry. */
+html.qs-shorts-active.qs-shorts-compact ytd-shorts .reel-video-in-sequence-new {
+  position: relative !important;
+  box-sizing: border-box !important;
+  width: 100vw !important;
+  height: var(--qs-vh) !important;
+  min-height: var(--qs-vh) !important;
+  max-height: var(--qs-vh) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  scroll-snap-align: start !important;
+  scroll-snap-stop: always !important;
+}
+
+html.qs-shorts-active.qs-shorts-compact ytd-shorts .reel-video-in-sequence-thumbnail {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: contain !important;
+  opacity: 0.10 !important;
+  filter: blur(18px) brightness(0.38) !important;
+  transform: scale(1.08) !important;
+}
+
+/* Center the live YouTube renderer instead of letting its position depend on
+   masthead height / browser chrome. */
+html.qs-shorts-active.qs-shorts-compact ytd-shorts #reel-overlay-container {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  overflow: visible !important;
+  transform: none !important;
+}
+
+html.qs-shorts-active.qs-shorts-compact ytd-shorts #reel-video-renderer {
+  position: relative !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  margin: 0 !important;
+  transform: scale(var(--qs-reel-scale)) !important;
+  transform-origin: center center !important;
+  will-change: transform !important;
+}
+
+/* Keep the actual movie surface contained. This does not detach or clone it. */
+html.qs-shorts-active.qs-shorts-compact ytd-shorts #reel-video-renderer .player-wrapper,
+html.qs-shorts-active.qs-shorts-compact ytd-shorts #reel-video-renderer #player-container,
+html.qs-shorts-active.qs-shorts-compact ytd-shorts #reel-video-renderer ytd-player,
+html.qs-shorts-active.qs-shorts-compact ytd-shorts #reel-video-renderer ytd-player > #container {
+  max-height: var(--qs-vh) !important;
+}
+
+html.qs-shorts-active.qs-shorts-compact ytd-shorts #reel-video-renderer video.html5-main-video {
+  object-fit: contain !important;
+}
+
+/* ---------- Custom navigation ---------- */
+#qs-shorts-ui {
+  display: none;
+}
+
+html.qs-shorts-active.qs-shorts-compact #qs-shorts-ui {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483645;
+  display: block;
+  pointer-events: none;
+  font-family: Roboto, Arial, sans-serif;
+}
+
+#qs-shorts-ui .qs-nav {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transform: translateY(-50%);
+  pointer-events: auto;
+}
+
+#qs-shorts-ui button {
+  width: 46px;
+  height: 46px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  background: rgba(18, 18, 18, 0.76);
+  color: #fff;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+#qs-shorts-ui button:hover {
+  background: rgba(48, 48, 48, 0.90);
+}
+
+#qs-shorts-ui button:active {
+  transform: scale(0.94);
+}
+
+#qs-shorts-ui button:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+#qs-shorts-ui svg {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+}
+
+/* Never interfere with true media fullscreen. */
+html:has(:fullscreen) #qs-shorts-ui {
+  display: none !important;
+}

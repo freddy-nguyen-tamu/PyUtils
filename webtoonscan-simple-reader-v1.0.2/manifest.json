@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "WebtoonScan Simple Reader",
+  "version": "1.0.2",
+  "description": "A minimal centered WebtoonScan reader with true native mouse/touchpad scrolling, keyboard navigation, and persistent auto-scroll.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://webtoonscan.com/*"
+  ],
+  "action": {
+    "default_title": "Simple Reader scroll rate",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://webtoonscan.com/manhwa/*"
+      ],
+      "js": [
+        "neutralize-smoothscroll.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://webtoonscan.com/manhwa/*"
+      ],
+      "js": [
+        "reader.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}

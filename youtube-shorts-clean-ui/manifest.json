@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Shorts Clean View",
+  "version": "1.0.0",
+  "description": "A clean desktop UI for YouTube Shorts with full-reel fitting and stable one-reel wheel navigation.",
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "css": ["styles.css"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

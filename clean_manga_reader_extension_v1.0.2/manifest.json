@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Clean Manga Auto Reader",
+  "version": "1.0.2",
+  "description": "Replaces the Prison School reader with a clean centered image stream, keyboard chapter navigation, and persistent auto-scroll.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.prisonschoolmangafree.com/*",
+    "https://prisonschoolmangafree.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.prisonschoolmangafree.com/manga/*",
+        "https://prisonschoolmangafree.com/manga/*"
+      ],
+      "js": [
+        "reader.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "Clean Manga Auto Reader",
+    "default_popup": "popup.html"
+  }
+}

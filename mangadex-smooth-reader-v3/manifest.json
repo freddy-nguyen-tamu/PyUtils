@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "MangaDex Smooth Reader",
+  "version": "3.0.0",
+  "description": "Minimal centered MangaDex reader with reliable native scrolling, safe auto-scroll, and keyboard chapter navigation.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://mangadex.org/*",
+    "https://www.mangadex.org/*"
+  ],
+  "action": {
+    "default_title": "MangaDex Smooth Reader",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mangadex.org/chapter/*",
+        "https://www.mangadex.org/chapter/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "reader.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
