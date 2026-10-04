@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "MangaDex Clean Reader",
+  "version": "1.0.0",
+  "description": "A minimal centered MangaDex reader with native mouse-wheel scrolling, persistent autoscroll, and MangaDex's own Left/Right navigation.",
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "MangaDex Clean Reader",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mangadex.org/chapter/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

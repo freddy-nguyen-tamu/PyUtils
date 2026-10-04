@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Toonily Simple Reader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Toonily Simple Reader</h1>
+
+    <label class="toggle-row">
+      <span>Auto-scroll</span>
+      <input id="autoScrollEnabled" type="checkbox">
+    </label>
+
+    <label>
+      <span>Auto-scroll speed (px/sec)</span>
+      <input id="autoScrollSpeed" type="number" min="10" max="3000" step="10">
+    </label>
+
+    <label>
+      <span>Arrow-key step (px)</span>
+      <input id="arrowScrollStep" type="number" min="20" max="3000" step="20">
+    </label>
+
+    <p class="keys">← previous · → next · ↑/↓ scroll · Enter auto-scroll</p>
+    <p id="saved" class="saved" aria-live="polite"></p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

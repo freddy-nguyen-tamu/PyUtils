@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Toonily Simple Reader",
+  "version": "1.0.0",
+  "description": "Replaces Toonily chapter pages with a minimal centered image reader and keyboard auto-scroll controls.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://toonily.com/*",
+    "https://www.toonily.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://toonily.com/serie/*",
+        "https://www.toonily.com/serie/*"
+      ],
+      "js": [
+        "reader.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "Toonily Simple Reader",
+    "default_popup": "popup.html"
+  }
+}

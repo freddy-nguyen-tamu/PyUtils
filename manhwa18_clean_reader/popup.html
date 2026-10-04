@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Clean Reader Settings</title>
+  <style>
+    body {
+      width: 270px;
+      margin: 0;
+      padding: 16px;
+      box-sizing: border-box;
+      font: 14px/1.4 system-ui, sans-serif;
+      background: #171717;
+      color: #f2f2f2;
+    }
+    label { display: block; margin-bottom: 8px; }
+    input[type="range"] { width: 100%; }
+    .row { display: flex; justify-content: space-between; gap: 12px; }
+    .hint { margin-top: 12px; opacity: .72; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <label for="speed">Auto-scroll speed</label>
+  <input id="speed" type="range" min="5" max="300" step="5">
+  <div class="row"><span>5 px/s</span><strong id="value"></strong><span>300 px/s</span></div>
+  <div class="hint">Enter toggles auto-scroll. Arrow keys navigate/scroll. Mouse wheel remains native.</div>
+  <script src="popup.js"></script>
+</body>
+</html>

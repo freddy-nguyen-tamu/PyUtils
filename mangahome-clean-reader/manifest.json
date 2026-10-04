@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "MangaHome Clean Reader",
+  "version": "1.0.0",
+  "description": "A minimal image-only MangaHome reader with native mouse-wheel scrolling and keyboard chapter/autoscroll controls.",
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "MangaHome Clean Reader",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://mangahome.com/manga/*",
+        "*://www.mangahome.com/manga/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

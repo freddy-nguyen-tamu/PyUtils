@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Manhwa18 Clean Reader",
+  "version": "1.0.0",
+  "description": "Minimal centered image reader with keyboard navigation and persistent auto-scroll.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://manhwa18.cc/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://manhwa18.cc/webtoon/*/chapter-*",
+        "https://www.manhwa18.cc/webtoon/*/chapter-*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Clean Reader Settings"
+  }
+}
