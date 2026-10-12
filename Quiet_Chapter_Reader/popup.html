@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Quiet Chapter Reader</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <h1>Quiet Chapter Reader</h1>
+  <label class="rate-label" for="rate">Auto-scroll speed <output id="rateValue">140 px/s</output></label>
+  <input id="rate" type="range" min="20" max="1200" step="10" value="140">
+  <label class="enabled-row" for="enabled"><span>Auto-scroll enabled</span><input id="enabled" type="checkbox"></label>
+  <p class="note">Saved automatically. The reading page itself shows images only.</p>
+  <div class="keys">
+    <p><kbd>Enter</kbd> Start / stop auto-scroll</p>
+    <p><kbd>←</kbd> Previous chapter &nbsp; <kbd>→</kbd> Next chapter</p>
+    <p><kbd>↑</kbd> Scroll up &nbsp; <kbd>↓</kbd> Scroll down</p>
+  </div>
+  <p class="note">Mouse-wheel and trackpad scrolling stay completely native. Press Enter to stop auto-scroll before reading manually. With auto-scroll on, it advances through available chapters and stops at the end.</p>
+</body>
+</html>

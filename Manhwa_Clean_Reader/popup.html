@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Clean Reader Settings</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Clean Reader</h1>
+    <p class="caption">ManhwaRead image-only reader</p>
+
+    <label class="setting" for="rate">
+      <span>Scrolling speed</span>
+      <strong id="speed">180 px/s</strong>
+    </label>
+    <input id="rate" type="range" min="20" max="600" step="10" value="180">
+    <div class="range-ends"><span>Slower</span><span>Faster</span></div>
+
+    <label class="toggle-line" for="automatic">
+      <span>Auto-scroll</span>
+      <input id="automatic" type="checkbox">
+    </label>
+    <p class="note">Settings are saved across chapters, tabs and browser restarts.</p>
+    <hr>
+    <dl>
+      <div><dt>Enter</dt><dd>Auto-scroll on / off</dd></div>
+      <div><dt>↓ / ↑</dt><dd>Scroll while held</dd></div>
+      <div><dt>→ / ←</dt><dd>Next / previous chapter</dd></div>
+      <div><dt>Mouse wheel</dt><dd>Native browser scrolling</dd></div>
+    </dl>
+    <p class="note">At the end of a loaded chapter, the reader advances automatically. On the final chapter, auto-scroll stops.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

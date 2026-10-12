@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "MangaDass Clean Reader",
+  "version": "1.0.1",
+  "description": "A minimal native-scrolling chapter reader with keyboard navigation and persistent auto-scroll.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://mangadass.com/*",
+    "https://www.mangadass.com/*"
+  ],
+  "action": {
+    "default_title": "Clean Reader settings",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mangadass.com/manga/*/chapter-*",
+        "https://www.mangadass.com/manga/*/chapter-*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "reader.css"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}

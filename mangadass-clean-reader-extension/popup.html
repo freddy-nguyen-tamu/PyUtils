@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clean Reader settings</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Clean Reader</h1>
+
+    <label for="speed">Auto-scroll speed</label>
+    <div class="speed-row">
+      <input id="speed" type="range" min="10" max="600" step="5">
+      <input id="speed-number" type="number" min="10" max="2000" step="5" inputmode="numeric">
+      <span>px/s</span>
+    </div>
+
+    <p id="state">Auto-scroll: OFF</p>
+    <p class="keys">Enter toggles auto-scroll · ←/→ changes chapter · ↑/↓ stays browser-native</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

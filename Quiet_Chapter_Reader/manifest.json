@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Quiet Chapter Reader",
+  "version": "1.0.0",
+  "description": "A minimal, centered image reader with native wheel scrolling, keyboard chapter navigation, and continuous auto-scroll.",
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "Quiet Chapter Reader — settings",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://truyenhentaiz.net/*", "*://*.truyenhentaiz.net/*"],
+      "js": ["reader.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

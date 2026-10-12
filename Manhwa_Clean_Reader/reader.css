@@ -1,0 +1,172 @@
+/*
+ * The original #reader stays in the site's DOM so its image loader and
+ * IntersectionObservers keep their original nodes, ancestors and listeners.
+ * A fixed, independently scrollable #reader bypasses document scroll locks.
+ * No wheel listener or wheel emulation is used.
+ */
+html.mcr-pending body {
+  visibility: hidden !important;
+}
+
+html.mcr-active,
+html.mcr-active body {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  overflow: hidden !important;
+  scroll-behavior: auto !important;
+  scroll-snap-type: none !important;
+  overscroll-behavior: none !important;
+  background: #0b0b0b !important;
+}
+
+html.mcr-active body {
+  visibility: visible !important;
+}
+
+/* Clear fixed-position containing blocks and clipping on the real ancestor
+ * chain. These classes are attached only to #reader's existing ancestors. */
+html.mcr-active .mcr-ancestor {
+  display: block !important;
+  position: static !important;
+  width: auto !important;
+  max-width: none !important;
+  height: auto !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transform: none !important;
+  perspective: none !important;
+  filter: none !important;
+  contain: none !important;
+  will-change: auto !important;
+  overflow: visible !important;
+  isolation: auto !important;
+  transition: none !important;
+  animation: none !important;
+}
+
+/* Remove visible website furniture without disconnecting its DOM elements. */
+html.mcr-active .mcr-hidden {
+  display: none !important;
+}
+
+/* The ONLY vertical scroll container: a native browser scrolling box.
+ * This works even when the site's top-level document cannot scroll. */
+html.mcr-active #reader {
+  display: block !important;
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483647 !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 100% !important;
+  height: 100dvh !important;
+  max-width: none !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: #0b0b0b !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+  scroll-behavior: auto !important;
+  scroll-snap-type: none !important;
+  overflow-anchor: none !important;
+  touch-action: auto !important;
+  -webkit-overflow-scrolling: touch;
+  transform: none !important;
+  transition: none !important;
+  animation: none !important;
+}
+
+/* Site controls live alongside #readingContent; not inside the panels. */
+html.mcr-active #reader > :not(#readingContent) {
+  display: none !important;
+}
+
+html.mcr-active #reader #readingContent,
+html.mcr-active #reader #readingContent > .container,
+html.mcr-active #reader #readingContent > .container > *,
+html.mcr-active #reader #imagesList {
+  display: block !important;
+  position: static !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  overflow: visible !important;
+  scroll-behavior: auto !important;
+  scroll-snap-type: none !important;
+  transform: none !important;
+  transition: none !important;
+  animation: none !important;
+}
+
+html.mcr-active #reader #imagesList {
+  width: min(100%, 720px) !important;
+  max-width: 720px !important;
+  margin-inline: auto !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+}
+
+/* Do not use content-visibility:auto on *unloaded* panels: it can interfere
+ * with the site's native lazy image observation. The width/height attributes
+ * preserve panel space before image decoding and avoid layout jumps. */
+html.mcr-active #reader #imagesList .image-page {
+  display: block !important;
+  position: relative !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  overflow: visible !important;
+  scroll-snap-align: none !important;
+  content-visibility: visible !important;
+  transform: none !important;
+  transition: none !important;
+  animation: none !important;
+}
+
+html.mcr-active #reader #imagesList .image-page img {
+  display: block !important;
+  position: static !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  object-fit: contain !important;
+  transform: none !important;
+  transition: none !important;
+  animation: none !important;
+  filter: none !important;
+  user-select: none !important;
+  -webkit-user-drag: none !important;
+}
+
+html.mcr-active #reader #imagesList img:not([src]):not([srcset]) {
+  opacity: 0 !important;
+}
+html.mcr-active #reader #imagesList img:is([src], [srcset]) {
+  opacity: 1 !important;
+  visibility: visible !important;
+}

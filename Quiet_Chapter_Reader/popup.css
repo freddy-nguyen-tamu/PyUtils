@@ -1,0 +1,12 @@
+:root { color-scheme: dark; font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
+body { margin: 0; padding: 18px; width: 290px; background: #15171c; color: #eee; font-size: 13px; }
+h1 { font-size: 17px; margin: 0 0 20px; font-weight: 650; }
+.rate-label { display: flex; justify-content: space-between; gap: 8px; font-weight: 550; }
+output { color: #b8cfff; font-variant-numeric: tabular-nums; }
+input[type="range"] { display: block; margin: 13px 0 21px; width: 100%; accent-color: #a9bfff; }
+.enabled-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 550; cursor: pointer; }
+input[type="checkbox"] { width: 17px; height: 17px; accent-color: #a9bfff; }
+.note { color: #a3a6b1; line-height: 1.5; font-size: 12px; }
+.keys { margin-top: 17px; border-top: 1px solid #3d3f47; padding-top: 7px; }
+.keys p { margin: 10px 0; line-height: 1.75; }
+kbd { display: inline-block; min-width: 15px; text-align: center; background: #313540; padding: 1px 5px; border-radius: 3px; color: #fff; font-family: inherit; }

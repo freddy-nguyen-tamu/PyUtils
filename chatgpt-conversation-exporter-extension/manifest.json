@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Conversation Exporter",
+  "version": "1.0.0",
+  "description": "Click the extension icon on a ChatGPT conversation to export the active conversation and inline attachments to one TXT file.",
+  "permissions": ["activeTab", "scripting"],
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "action": {
+    "default_title": "Export this ChatGPT conversation"
+  }
+}

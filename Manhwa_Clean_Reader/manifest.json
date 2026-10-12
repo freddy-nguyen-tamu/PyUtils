@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Manhwa Clean Reader",
+  "version": "1.1.0",
+  "description": "Images-only reading with native mouse-wheel scrolling, keyboard navigation, and persistent automatic chapter progression.",
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "Manhwa Clean Reader settings",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://manhwaread.com/*",
+        "https://www.manhwaread.com/*"
+      ],
+      "js": ["reader.js"],
+      "css": ["reader.css"],
+      "run_at": "document_start"
+    }
+  ]
+}

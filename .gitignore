@@ -119,3 +119,4 @@ debug_*
 # Keep source-project icon assets
 !**/icons/
 !**/icons/**
+credentials.json

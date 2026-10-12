@@ -12,7 +12,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 
 # ---------------------------------------------------------------------------
@@ -280,13 +280,9 @@ except SystemExit as exc:
 # Configuration
 # ---------------------------------------------------------------------------
 
-VIDEO_FOLDER = Path(r"C:\Users\qacer\Downloads\new\yoonsul vids")
-
-VIDEO_EXTENSIONS = {
-    ".3gp", ".asf", ".avi", ".divx", ".f4v", ".flv", ".m2ts", ".m4v",
-    ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".mts", ".ogv", ".rm",
-    ".rmvb", ".ts", ".vob", ".webm", ".wmv",
-}
+# Folder is chosen by the user in a Windows folder picker, never hardcoded.
+# Review MP4 videos only.
+VIDEO_EXTENSIONS = {".mp4"}
 
 KEEP_PREFIX = "keep_"
 DELETE_SAVED_FRAME_PREFIX = "to_be_deleted_already_save_one_frame_"
@@ -727,6 +723,7 @@ class VideoQueueReviewer:
         self.root.geometry("1420x840")
         self.root.minsize(1050, 650)
 
+        self.video_folder: Path | None = None
         self.queue: list[Path] = []
         self.media = None
         self.closed = False
@@ -779,7 +776,8 @@ class VideoQueueReviewer:
 
         self.last_clip_field = "start"
 
-        self.status_var = tk.StringVar(value="Starting…")
+        self.status_var = tk.StringVar(value="Select an MP4 folder to begin.")
+        self.folder_var = tk.StringVar(value="Folder: (not selected)")
         self.current_file_var = tk.StringVar(value="No video loaded")
         self.queue_count_var = tk.StringVar(value="Queue: 0")
         self.current_time_var = tk.StringVar(value="00:00")
@@ -820,20 +818,10 @@ class VideoQueueReviewer:
         self._bind_keys()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
-        if not VIDEO_FOLDER.is_dir():
-            messagebox.showerror(
-                "Folder not found",
-                f"The configured folder does not exist:\n{VIDEO_FOLDER}",
-            )
-            self.root.destroy()
-            return
-
-        self._scan_folder()
-        self._populate_queue_list()
-        self._load_current_video()
-
         self.root.after(self.PLAYER_POLL_MS, self._poll_player)
         self.root.after(self.TIMELINE_ANIMATION_MS, self._animate_timeline)
+        # Prompt once at startup. Cancel leaves the app open and usable.
+        self.root.after(0, self.choose_folder)
 
     # ------------------------------------------------------------------
     # UI
@@ -1163,17 +1151,20 @@ class VideoQueueReviewer:
             pady=(3, 0),
         )
 
+        folder_row = ttk.Frame(main)
+        folder_row.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        folder_row.columnconfigure(0, weight=1)
         ttk.Label(
-            main,
-            text=f"Folder: {VIDEO_FOLDER}",
+            folder_row,
+            textvariable=self.folder_var,
             anchor="w",
-        ).grid(
-            row=6,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(2, 0),
-        )
+        ).grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            folder_row,
+            text="Browse MP4 folder…",
+            command=self.choose_folder,
+            takefocus=False,
+        ).grid(row=0, column=1, padx=(8, 0))
 
         # Text-only toast. It never loads, scales, or displays the saved image.
         self.toast_label = tk.Label(
@@ -1355,12 +1346,70 @@ class VideoQueueReviewer:
     # Queue
     # ------------------------------------------------------------------
 
-    def _scan_folder(self) -> None:
+    def choose_folder(self) -> None:
+        """Select or switch the MP4 review folder using a native Windows dialog."""
+        if self.closed:
+            return
+        if self.busy or self.restarting or self.capture_busy:
+            messagebox.showinfo(
+                "Video transition in progress",
+                "Finish the current video operation before changing folders.",
+                parent=self.root,
+            )
+            return
+        if self.active_background_job is not None or self.background_jobs:
+            messagebox.showinfo(
+                "Background jobs pending",
+                "Wait for existing frame saves, renames, or clip exports to finish "
+                "before switching folders. This avoids interrupting a save.",
+                parent=self.root,
+            )
+            return
+
+        selected = filedialog.askdirectory(
+            parent=self.root,
+            title="Choose folder containing MP4 videos",
+            initialdir=str(self.video_folder or Path.home()),
+            mustexist=True,
+        )
+        if not selected:
+            if self.video_folder is None:
+                self._set_status("No folder selected. Click Browse MP4 folder to begin.")
+            return
+
+        folder = Path(selected).expanduser().resolve()
+        if not folder.is_dir():
+            messagebox.showerror("Invalid folder", f"Not a folder:\n{folder}", parent=self.root)
+            return
+
+        try:
+            # Scan before changing state, so errors preserve the existing queue.
+            new_queue = self._scan_folder(folder)
+        except OSError as exc:
+            messagebox.showerror(
+                "Unable to read folder",
+                f"Could not scan:\n{folder}\n\n{exc}",
+                parent=self.root,
+            )
+            return
+
+        self._cancel_transition()
+        self._release_current_media()
+        self.video_folder = folder
+        self.queue = new_queue
+        self.folder_var.set(f"Folder: {folder}")
+        self.clip_start_var.set("")
+        self.clip_end_var.set("")
+        self._populate_queue_list()
+        self._load_current_video()
+        if not new_queue:
+            self._set_status("No unprocessed MP4 files in this folder. Choose another folder.")
+
+    def _scan_folder(self, folder: Path) -> list[Path]:
         videos: list[Path] = []
 
-        # os.scandir avoids creating Path/stat objects for files that will be
-        # rejected, which matters in very large folders.
-        with os.scandir(VIDEO_FOLDER) as entries:
+        # os.scandir avoids creating Path/stat objects for rejected files.
+        with os.scandir(folder) as entries:
             for entry in entries:
                 try:
                     if not entry.is_file():
@@ -1381,7 +1430,7 @@ class VideoQueueReviewer:
 
                 videos.append(path)
 
-        self.queue = sorted(videos, key=natural_sort_key)
+        return sorted(videos, key=natural_sort_key)
 
     def _populate_queue_list(self) -> None:
         previous_guard = self.queue_selection_in_progress

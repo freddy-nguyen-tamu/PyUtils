@@ -1,0 +1,18 @@
+* { box-sizing: border-box; }
+html { color-scheme: dark; }
+body { width: 310px; margin: 0; background: #17191f; color: #f2f3f7; font: 13px/1.5 system-ui, sans-serif; }
+main { padding: 18px; }
+h1 { font-size: 18px; font-weight: 700; margin: 0; }
+.caption { color: #9ca3af; margin: 2px 0 22px; }
+.setting, .toggle-line { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.setting strong { font-variant-numeric: tabular-nums; font-size: 13px; white-space: nowrap; }
+input[type=range] { width: 100%; accent-color: #9eaafd; margin: 12px 0 2px; cursor: pointer; }
+.range-ends { color: #9297a4; display: flex; justify-content: space-between; font-size: 11px; }
+.toggle-line { margin-top: 22px; font-weight: 600; }
+input[type=checkbox] { width: 17px; height: 17px; accent-color: #9eaafd; cursor: pointer; }
+.note { font-size: 11px; color: #9da3b0; margin: 12px 0 0; }
+hr { height: 1px; background: #353944; border: 0; margin: 21px 0 17px; }
+dl, dt, dd { margin: 0; }
+dl > div { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+dt { color: #d8dcff; font-weight: 600; flex: 0 0 85px; }
+dd { text-align: right; color: #c2c5cd; }
