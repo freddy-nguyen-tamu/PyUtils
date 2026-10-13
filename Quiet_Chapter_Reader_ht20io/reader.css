@@ -1,0 +1,120 @@
+/* The site owns the original #readerarea and all its real image elements.
+   No root/virtual scrolling, wheel interception, cloning, or src rewriting. */
+html[data-qcr-active="true"],
+html[data-qcr-active="true"] body {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: #0b0b0b !important;
+  overscroll-behavior: none !important;
+  scroll-behavior: auto !important;
+  scroll-snap-type: none !important;
+}
+
+/* Hide website chrome without deleting nodes, detaching images, changing
+   their parentage, or disturbing the site's existing image loader. */
+html[data-qcr-active="true"] body > * {
+  visibility: hidden !important;
+}
+
+/* A transform/filter/contain ancestor can hijack a fixed-position child's
+   containing block; cancel those effects along the ORIGINAL ancestor path. */
+html[data-qcr-active="true"] :is(
+  .mainholder, #readercontent, .wrapper, .chapterbody, .postarea,
+  .hentry, .entry-content, .maincontent
+) {
+  transform: none !important;
+  perspective: none !important;
+  filter: none !important;
+  contain: none !important;
+  content-visibility: visible !important;
+  overflow: visible !important;
+  scroll-behavior: auto !important;
+  scroll-snap-type: none !important;
+  animation: none !important;
+  transition: none !important;
+}
+
+html[data-qcr-active="true"] #readerarea {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483646 !important;
+  display: block !important;
+  box-sizing: border-box !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: #0b0b0b !important;
+  color: transparent !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  text-align: center !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  transform: none !important;
+  filter: none !important;
+  scroll-behavior: auto !important;
+  scroll-snap-type: none !important;
+  overscroll-behavior: contain !important;
+  overflow-anchor: auto !important;
+  touch-action: pan-y !important;
+  animation: none !important;
+  transition: none !important;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+html[data-qcr-active="true"] #readerarea::-webkit-scrollbar { display: none; }
+
+html[data-qcr-active="true"] #readerarea :is(img, picture, source) {
+  visibility: visible !important;
+}
+html[data-qcr-active="true"] #readerarea img {
+  position: static !important;
+  display: block !important;
+  box-sizing: border-box !important;
+  width: auto !important;
+  max-width: 100% !important;
+  height: auto !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  object-fit: contain !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
+  border: 0 !important;
+  float: none !important;
+  transform: none !important;
+  filter: none !important;
+  scroll-snap-align: none !important;
+  animation: none !important;
+  transition: none !important;
+}
+/* Keep original picture/wrapper relationships for lazy and protected images. */
+html[data-qcr-active="true"] #readerarea :is(picture, figure, div, a, span, p) {
+  max-width: 100% !important;
+  min-height: 0 !important;
+  height: auto !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
+  border: 0 !important;
+  transform: none !important;
+  scroll-snap-type: none !important;
+  animation: none !important;
+  transition: none !important;
+}
+/* Chapter text or injected controls must not appear over panels. */
+html[data-qcr-active="true"] #readerarea :is(button, nav, aside, iframe, svg, video, canvas, figcaption) {
+  display: none !important;
+}

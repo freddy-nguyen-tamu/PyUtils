@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Quiet Chapter Reader",
+  "version": "1.1.0",
+  "description": "A clean native-scroll chapter reader with keyboard and unattended chapter navigation.",
+  "permissions": [
+    "storage"
+  ],
+  "action": {
+    "default_title": "Quiet Chapter Reader settings",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://hentai20.io/*",
+        "https://www.hentai20.io/*"
+      ],
+      "run_at": "document_start",
+      "css": [
+        "reader.css"
+      ],
+      "js": [
+        "reader.js"
+      ]
+    }
+  ]
+}

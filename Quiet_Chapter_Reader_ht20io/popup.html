@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Quiet Chapter Reader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Quiet Chapter Reader</h1>
+    <label class="toggle">
+      <span>Automatic scrolling</span>
+      <input id="auto" type="checkbox">
+    </label>
+    <div class="speed-row"><label for="speed">Scrolling speed</label><output id="speed-value" for="speed">130 px/s</output></div>
+    <input id="speed" type="range" min="20" max="600" step="5" value="130">
+    <p class="hint">← / → Chapters<br>↑ / ↓ Scroll while held<br>Enter Toggle auto-scroll<br>Mouse wheel / touchpad Always native</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

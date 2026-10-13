@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Google Photos Auto Fit</title>
+  <style>
+    :root { color-scheme: dark; font: 13px system-ui, -apple-system, Segoe UI, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; width: 310px; color: #f3f4f6; background: #171a22; }
+    main { padding: 18px; }
+    h1 { margin: 0 0 5px; font-size: 17px; font-weight: 650; }
+    p { margin: 0; color: #abb4c6; line-height: 1.45; }
+    .settings { border-top: 1px solid #343b4b; margin-top: 16px; padding-top: 13px; }
+    .choice { display: flex; align-items: center; gap: 10px; padding: 9px 0; cursor: pointer; }
+    .choice input { width: 16px; height: 16px; accent-color: #81a8ff; flex: none; }
+    .choice span { flex: 1; }
+    .sub { font-size: 11px; margin-left: 26px; margin-top: -3px; margin-bottom: 9px; }
+    .range-head { display: flex; justify-content: space-between; margin: 14px 0 7px; }
+    .range-head output { color: #a8c4ff; font-variant-numeric: tabular-nums; }
+    input[type=range] { width: 100%; accent-color: #81a8ff; margin: 0; }
+    footer { border-top: 1px solid #343b4b; padding: 10px 18px 14px; }
+    footer p { font-size: 11px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Google Photos Auto Fit</h1>
+    <p>Enlarge small open photos to fit the available viewing area. Thumbnails stay untouched.</p>
+    <section class="settings">
+      <label class="choice"><input id="enabled" type="checkbox"><span>Automatically fit photos</span></label>
+      <label class="choice"><input id="tryNativeZoom" type="checkbox"><span>Try Google Photos zoom first</span></label>
+      <p class="sub">For photos Google won't zoom, automatically enlarge the image itself.</p>
+      <label class="range-head" for="edgeGap"><span>Space from edges</span><output id="edgeGapValue">0 px</output></label>
+      <input id="edgeGap" type="range" min="0" max="32" step="1" value="0">
+    </section>
+  </main>
+  <footer><p>Fits to the viewer, not the browser tabs or taskbar. Manual mouse zoom and navigation remain available.</p></footer>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Google Photos — Automatic Image Fit",
+  "description": "Automatically enlarge small photos to fill the available Google Photos viewer without changing browser page zoom.",
+  "version": "1.0.0",
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "Google Photos Auto Fit",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://photos.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
