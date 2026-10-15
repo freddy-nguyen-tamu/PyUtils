@@ -56,8 +56,13 @@ from selenium.webdriver.firefox.options import Options
 # START_URL = "https://www.facebook.com/photo.php?fbid=3709769422600367&set=pb.100007020363583.-2207520000&type=3"
 # START_URL = "https://www.facebook.com/photo.php?fbid=2456355921348144&set=t.100007909695725&type=3"
 # START_URL = "https://www.facebook.com/photo.php?fbid=2211984685953584&set=pb.100014262227006.-2207520000&type=3"
-START_URL = "https://www.facebook.com/photo.php?fbid=2129339194093893&set=pb.100010534987840.-2207520000&type=3"
-
+# START_URL = "https://www.facebook.com/photo.php?fbid=2129339194093893&set=pb.100010534987840.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=2071351473332863&set=pb.100013740906353.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=4557963824416770&set=pb.100006095922659.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=1757568778839458&set=pb.100037590579355.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=29051988881086218&set=pb.100001054748981.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=3430706943783045&set=pb.100005313192826.-2207520000&type=3"
+START_URL = "https://www.facebook.com/photo?fbid=26409641171990220&set=pb.100001130900235.-2207520000"
 OUT_DIR = "fb_photos"
 
 # This folder stores the Selenium Firefox login session.
