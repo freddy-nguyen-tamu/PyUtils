@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reddit Carousel Downloader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <div class="brand"><span class="logo">↓</span><div><h1>Carousel Downloader</h1><p class="sub">Reddit image galleries</p></div></div>
+    <section class="counts" aria-live="polite">
+      <div><strong id="downloaded">0</strong><span>Downloaded</span></div>
+      <div><strong id="skipped">0</strong><span>Duplicates skipped</span></div>
+      <div><strong id="position">—</strong><span>Current slide</span></div>
+    </section>
+    <p class="status" id="status">Open a Reddit gallery to begin.</p>
+    <p class="error" id="error" hidden></p>
+    <label class="setting" for="delay">Pause after each next click <span id="delayText">450 ms</span></label>
+    <input id="delay" type="range" min="150" max="2000" step="50" value="450">
+    <button class="start" id="start">Download carousel</button>
+    <button class="stop" id="stop" hidden>Stop</button>
+    <div class="footer"><span>Original images when available</span><span>Downloads / Reddit Carousel</span></div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

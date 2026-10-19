@@ -1,0 +1,29 @@
+#gk-v5-panel,#gk-v5-panel *,#gk-v5-launcher{box-sizing:border-box!important;font-family:system-ui,-apple-system,'Segoe UI',sans-serif!important}
+#gk-v5-launcher{position:fixed!important;right:20px!important;bottom:20px!important;z-index:2147483600!important;border:0!important;border-radius:999px!important;padding:12px 18px!important;background:#245bd4!important;color:#fff!important;font-size:13px!important;font-weight:700!important;cursor:pointer!important;box-shadow:0 8px 32px #17274355!important}
+#gk-v5-panel{position:fixed!important;right:0!important;top:0!important;height:100vh!important;width:min(440px,100vw)!important;z-index:2147483601!important;color:#18263d!important;background:#f9fbfe!important;box-shadow:-10px 0 38px #1c2e4c3b!important;border-left:1px solid #dbe2ea!important;text-align:left!important}
+#gk-v5-panel[hidden],#gk-v5-launcher[hidden]{display:none!important}
+#gk-v5-panel .gk-head{background:white!important;height:65px!important;display:flex!important;align-items:center!important;justify-content:space-between!important;padding:0 18px!important;border-bottom:1px solid #e1e5ed!important}
+#gk-v5-panel .gk-brand{font-weight:750!important;color:#20365a!important;font-size:19px!important}
+#gk-v5-panel .gk-close{border:0!important;background:transparent!important;font-size:25px!important;color:#52657f!important;cursor:pointer!important}
+#gk-v5-panel .gk-main{height:calc(100vh - 65px)!important;padding:16px 19px 26px!important;overflow-y:auto!important;font-size:12px!important;line-height:1.5!important}
+#gk-v5-panel .gk-note{font-size:12px!important;color:#35557a!important;padding:12px!important;border-radius:9px!important;background:#eaf1ff!important;border:1px solid #d6e4ff!important}
+#gk-v5-panel .gk-label{display:block!important;font-size:12px!important;font-weight:750!important;margin:16px 0 7px!important;color:#26354e!important}
+#gk-v5-panel textarea{min-height:145px!important;width:100%!important;padding:10px!important;background:white!important;border:1px solid #cdd7e4!important;color:#23314a!important;border-radius:8px!important;resize:vertical!important;font:12px/1.5 ui-monospace,Consolas,monospace!important}
+#gk-v5-panel input[type=text]{width:100%!important;padding:9px!important;background:white!important;border:1px solid #cdd7e4!important;border-radius:8px!important;color:#1e2c43!important;font-size:12px!important}
+#gk-v5-panel .gk-help{color:#78879b!important;font-size:11px!important;margin:9px 0!important}
+#gk-v5-panel .gk-warning{color:#795018!important;background:#fff5e6!important;border:1px solid #ffe3b8!important;padding:10px!important;border-radius:8px!important;font-size:11px!important}
+#gk-v5-panel .gk-stat-grid{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:5px!important;margin-top:15px!important}
+#gk-v5-panel .gk-stat{border:1px solid #dfe5ee!important;border-radius:8px!important;background:white!important;padding:10px 3px!important;text-align:center!important}
+#gk-v5-panel .gk-stat strong{display:block!important;font-size:17px!important;color:#29486a!important;font-variant-numeric:tabular-nums!important}
+#gk-v5-panel .gk-stat span{display:block!important;font-size:10px!important;color:#6c7b91!important}
+#gk-v5-panel .gk-actions{display:flex!important;gap:7px!important;margin-top:12px!important}
+#gk-v5-panel button{cursor:pointer!important}
+#gk-v5-panel .gk-actions button{flex:1!important;min-width:0!important;border-radius:8px!important;padding:10px 6px!important;font-size:11px!important;font-weight:700!important}
+#gk-v5-panel .gk-secondary{background:white!important;border:1px solid #d0d9e6!important;color:#29415f!important}
+#gk-v5-panel .gk-danger{background:#c63e38!important;border:1px solid #c63e38!important;color:white!important}
+#gk-v5-panel button:disabled{opacity:.45!important;cursor:default!important}
+#gk-v5-panel .gk-status{border-radius:8px!important;color:#344968!important;background:#f0f4fa!important;padding:11px!important;margin-top:13px!important;line-height:1.6!important}
+#gk-v5-panel .gk-log{max-height:240px!important;min-height:85px!important;overflow-y:auto!important;padding:10px!important;border-radius:8px!important;border:1px solid #dfe6ef!important;background:#f1f4f9!important;font:11px/1.6 ui-monospace,Consolas,monospace!important;overflow-wrap:anywhere!important;color:#57697f!important}
+#gk-v5-panel .gk-log .warning{color:#a46a08!important}
+#gk-v5-panel .gk-log .error{color:#b73935!important}
+#gk-v5-panel .gk-log .success{color:#147656!important}

@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Reddit Carousel Downloader",
+  "version": "1.0.0",
+  "description": "Download the current Reddit gallery image and advance until the gallery ends, saving original images when available.",
+  "permissions": ["activeTab", "scripting", "downloads", "storage"],
+  "action": {
+    "default_title": "Download Reddit carousel",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {"service_worker": "background.js"},
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

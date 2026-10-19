@@ -62,7 +62,12 @@ from selenium.webdriver.firefox.options import Options
 # START_URL = "https://www.facebook.com/photo.php?fbid=1757568778839458&set=pb.100037590579355.-2207520000&type=3"
 # START_URL = "https://www.facebook.com/photo.php?fbid=29051988881086218&set=pb.100001054748981.-2207520000&type=3"
 # START_URL = "https://www.facebook.com/photo.php?fbid=3430706943783045&set=pb.100005313192826.-2207520000&type=3"
-START_URL = "https://www.facebook.com/photo?fbid=26409641171990220&set=pb.100001130900235.-2207520000"
+# START_URL = "https://www.facebook.com/photo?fbid=26409641171990220&set=pb.100001130900235.-2207520000"
+# START_URL = "https://www.facebook.com/photo.php?fbid=10243158040311015&set=pb.1357635880.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=3193090827551285&set=pb.100005511961989.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=2373446286191952&set=pb.100005798108570.-2207520000&type=3"
+# START_URL = "https://www.facebook.com/photo.php?fbid=1442855147796551&set=pb.100062162385012.-2207520000&type=3"
+START_URL = "https://www.facebook.com/photo.php?fbid=2597802760738053&set=pb.100015250620650.-2207520000&type=3"
 OUT_DIR = "fb_photos"
 
 # This folder stores the Selenium Firefox login session.

@@ -26,7 +26,8 @@ except Exception:
 # FOLDER = r"C:\Users\qacer\Downloads\Instagram\mckennagraceful"
 # FOLDER = r"C:\Users\qacer\Downloads\py\fb_photos"
 # FOLDER = r"C:\Users\qacer\Downloads\new\keep_safe\rest_images\mailinh"
-FOLDER = r"C:\Users\qacer\Downloads\mai_dora_100_downloader_bundle\mai_dora_downloads"
+# FOLDER = r"C:\Users\qacer\Downloads\mai_dora_100_downloader_bundle\mai_dora_downloads"
+FOLDER = r"C:\Users\qacer\Downloads\new\fb_photos"
 
 IMAGE_EXTS = {
     ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".gif", ".heic", ".heif"
